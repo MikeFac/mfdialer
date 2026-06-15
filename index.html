@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Telnyx Dialer</title>
+  </head>
+  <body>
+    <main class="dialer">
+      <h1>Telnyx Dialer</h1>
+
+      <section class="status-panel" aria-live="polite">
+        <div>
+          <span>Connection</span>
+          <strong id="connectionStatus">Disconnected</strong>
+        </div>
+        <div>
+          <span>Call</span>
+          <strong id="callStatus">Idle</strong>
+        </div>
+      </section>
+
+      <form id="dialerForm">
+        <label for="phoneNumber">Number to dial</label>
+        <input
+          id="phoneNumber"
+          name="phoneNumber"
+          type="tel"
+          inputmode="tel"
+          autocomplete="tel"
+          placeholder="+15551234567"
+          pattern="^\+[1-9]\d{1,14}$"
+          title="Use E.164 format, for example +19712480206"
+          required
+        />
+
+        <div class="audio-devices">
+          <label for="microphone">Microphone</label>
+          <select id="microphone" disabled>
+            <option value="">System default</option>
+          </select>
+
+          <div class="device-test">
+            <button id="testMicButton" class="secondary" type="button" disabled>Test mic</button>
+            <div class="mic-meter" aria-hidden="true">
+              <span id="micLevelBar"></span>
+            </div>
+          </div>
+
+          <label for="audioOutput">Speaker</label>
+          <select id="audioOutput" disabled>
+            <option value="">System default</option>
+          </select>
+
+          <button id="testSpeakerButton" class="secondary" type="button" disabled>
+            Test speaker
+          </button>
+        </div>
+
+        <div class="actions">
+          <button id="callButton" type="submit">Dial</button>
+          <button id="hangupButton" type="button" disabled>Hang up</button>
+        </div>
+      </form>
+
+      <p id="message" role="status"></p>
+      <section id="errorPanel" class="error-panel" role="alert" hidden>
+        <strong id="errorSummary"></strong>
+        <pre id="errorDetails"></pre>
+      </section>
+      <audio id="remoteMedia" autoplay playsinline></audio>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,172 @@
+:root {
+  color: #172033;
+  background: #f6f7f9;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+.dialer {
+  width: min(440px, calc(100vw - 32px));
+  padding: 28px;
+  background: #ffffff;
+  border: 1px solid #d8dde6;
+  border-radius: 8px;
+}
+
+h1 {
+  margin: 0 0 20px;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.status-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.status-panel div {
+  padding: 12px;
+  border: 1px solid #d8dde6;
+  border-radius: 6px;
+}
+
+.status-panel span {
+  display: block;
+  margin-bottom: 4px;
+  color: #657086;
+  font-size: 13px;
+}
+
+.status-panel strong {
+  display: block;
+  min-height: 24px;
+  overflow-wrap: anywhere;
+}
+
+label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #aab2c0;
+  border-radius: 6px;
+  font: inherit;
+}
+
+input:focus,
+select:focus {
+  border-color: #175cff;
+  outline: 3px solid rgba(23, 92, 255, 0.18);
+}
+
+.audio-devices {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.device-test {
+  display: grid;
+  grid-template-columns: minmax(110px, max-content) 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-top: 16px;
+}
+
+button {
+  min-height: 42px;
+  border: 0;
+  border-radius: 6px;
+  background: #172033;
+  color: #ffffff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+button.secondary {
+  min-height: 38px;
+  padding: 0 14px;
+  background: #4f5a6e;
+  font-size: 14px;
+}
+
+#hangupButton {
+  background: #b42318;
+}
+
+.mic-meter {
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e6e9ef;
+}
+
+.mic-meter span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: #137333;
+  transition: width 80ms linear;
+}
+
+#message {
+  min-height: 22px;
+  margin: 16px 0 0;
+  color: #4f5a6e;
+}
+
+.error-panel {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #f1a7a1;
+  border-radius: 6px;
+  background: #fff4f2;
+  color: #7a271a;
+}
+
+.error-panel strong {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.error-panel pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}

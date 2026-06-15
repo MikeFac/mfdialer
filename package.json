@@ -1,0 +1,19 @@
+{
+  "name": "telnyx-browser-dialer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "build": "vite build",
+    "preview": "node server.js"
+  },
+  "dependencies": {
+    "@telnyx/webrtc": "^2.27.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "vite": "^6.0.7",
+    "webrtc-adapter": "^9.0.1"
+  },
+  "devDependencies": {}
+}
