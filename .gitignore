@@ -1,7 +1,6 @@
 node_modules
 dist
 .env
-.git.local
 .server.pid
 logs
 .DS_Store
