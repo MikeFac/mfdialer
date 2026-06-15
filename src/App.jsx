@@ -203,10 +203,27 @@ function getIceLabel(report, pair) {
 }
 
 function getNetworkQuality({ jitterMs, packetLossPercent, rttMs }) {
-  if (![jitterMs, packetLossPercent, rttMs].some(Number.isFinite)) return 'Waiting';
-  if (packetLossPercent > 5 || jitterMs > 50 || rttMs > 300) return 'Poor';
-  if (packetLossPercent > 2 || jitterMs > 30 || rttMs > 150) return 'Fair';
-  return 'Good';
+  const reasons = [];
+
+  if (![jitterMs, packetLossPercent, rttMs].some(Number.isFinite)) {
+    return { label: 'Waiting', reasons: ['Waiting for WebRTC stats'] };
+  }
+
+  if (packetLossPercent > 5) reasons.push('high packet loss');
+  if (jitterMs > 50) reasons.push('high jitter');
+  if (rttMs > 500) reasons.push('very high latency');
+
+  if (reasons.length > 0) return { label: 'Poor', reasons };
+
+  if (packetLossPercent > 2) reasons.push('some packet loss');
+  if (jitterMs > 30) reasons.push('some jitter');
+  if (rttMs > 300) reasons.push('high latency');
+
+  if (reasons.length > 0) return { label: 'Fair', reasons };
+
+  if (rttMs > 150) reasons.push('moderate latency');
+
+  return { label: 'Good', reasons };
 }
 
 function getSavedDeviceId(storageKey) {
@@ -482,12 +499,13 @@ function App({ authHeader, userMenu }) {
       const localAudioTracks = summarizeAudioTracks(activeCall.localStream);
       const remoteAudioTracks = summarizeAudioTracks(remoteMediaRef.current?.srcObject || activeCall.remoteStream);
       const networkQuality = getNetworkQuality({ jitterMs, packetLossPercent, rttMs });
+      const networkReason = networkQuality.reasons.length ? `; ${networkQuality.reasons.join(', ')}` : '';
       const remoteTrackSummary = remoteAudioTracks.length
         ? `${remoteAudioTracks.length} remote track${remoteAudioTracks.length === 1 ? '' : 's'}`
         : 'No remote track';
 
       setDiagnostics({
-        network: `${networkQuality} (${formatPercent(packetLossPercent)} loss, ${formatMs(jitterMs)} jitter)`,
+        network: `${networkQuality.label} (${formatPercent(packetLossPercent)} loss, ${formatMs(jitterMs)} jitter, ${formatMs(rttMs)} RTT${networkReason})`,
         audio: `${remoteTrackSummary}, sink ${remoteMediaRef.current?.sinkId || 'system-default'}`,
         codec: inboundCodec === outboundCodec ? inboundCodec : `in ${inboundCodec}, out ${outboundCodec}`,
         ice: iceLabel,
@@ -501,7 +519,8 @@ function App({ authHeader, userMenu }) {
               signalingState: pc.signalingState,
             },
             network: {
-              quality: networkQuality,
+              quality: networkQuality.label,
+              reasons: networkQuality.reasons,
               packetLoss: formatPercent(packetLossPercent),
               packetsLost,
               packetsReceived,
