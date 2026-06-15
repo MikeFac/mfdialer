@@ -20,6 +20,29 @@
         </div>
       </section>
 
+      <section id="diagnosticsPanel" class="diagnostics-panel" aria-live="polite">
+        <h2>Call diagnostics</h2>
+        <div class="diagnostics-grid">
+          <div>
+            <span>Network</span>
+            <strong id="diagNetwork">Idle</strong>
+          </div>
+          <div>
+            <span>Audio</span>
+            <strong id="diagAudio">Idle</strong>
+          </div>
+          <div>
+            <span>Codec</span>
+            <strong id="diagCodec">Unknown</strong>
+          </div>
+          <div>
+            <span>ICE route</span>
+            <strong id="diagIce">Unknown</strong>
+          </div>
+        </div>
+        <pre id="diagDetails"></pre>
+      </section>
+
       <form id="dialerForm">
         <label for="phoneNumber">Number to dial</label>
         <input

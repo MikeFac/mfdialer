@@ -18,6 +18,12 @@ const micLevelBar = document.querySelector('#micLevelBar');
 const errorPanel = document.querySelector('#errorPanel');
 const errorSummary = document.querySelector('#errorSummary');
 const errorDetails = document.querySelector('#errorDetails');
+const diagnosticsPanel = document.querySelector('#diagnosticsPanel');
+const diagNetwork = document.querySelector('#diagNetwork');
+const diagAudio = document.querySelector('#diagAudio');
+const diagCodec = document.querySelector('#diagCodec');
+const diagIce = document.querySelector('#diagIce');
+const diagDetails = document.querySelector('#diagDetails');
 
 let client;
 let activeCall;
@@ -27,6 +33,7 @@ let micTest;
 let connectPromise;
 let connectResolve;
 let connectReject;
+let diagnosticsTimer;
 
 const terminalCallStates = new Set(['done', 'hangup', 'destroy', 'purge', 9, 10, 11]);
 const playableCallStates = new Set(['early', 'active', 6, 7]);
@@ -198,6 +205,216 @@ function getRemoteAudioStatus(context) {
       readyState: track.readyState,
     })),
   };
+}
+
+function formatMs(value) {
+  return Number.isFinite(value) ? `${Math.round(value)} ms` : 'unknown';
+}
+
+function formatPercent(value) {
+  return Number.isFinite(value) ? `${value.toFixed(1)}%` : 'unknown';
+}
+
+function formatBytes(value) {
+  if (!Number.isFinite(value)) return 'unknown';
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${value} B`;
+}
+
+function summarizeAudioTracks(stream) {
+  return (stream?.getAudioTracks?.() || []).map((track) => ({
+    id: track.id,
+    label: track.label || 'unlabeled',
+    enabled: track.enabled,
+    muted: track.muted,
+    readyState: track.readyState,
+  }));
+}
+
+function getPeerConnection(call) {
+  return call?.peer?.instance || call?.peer || null;
+}
+
+function getStat(report, id) {
+  return id ? report.get(id) : null;
+}
+
+function getSelectedCandidatePair(stats) {
+  const pairs = stats.filter((stat) => stat.type === 'candidate-pair');
+
+  return (
+    pairs.find((pair) => pair.selected) ||
+    pairs.find((pair) => pair.nominated && pair.state === 'succeeded') ||
+    pairs.find((pair) => pair.state === 'succeeded') ||
+    null
+  );
+}
+
+function getAudioStats(stats) {
+  const inbound = stats.find(
+    (stat) => stat.type === 'inbound-rtp' && (stat.kind === 'audio' || stat.mediaType === 'audio'),
+  );
+  const outbound = stats.find(
+    (stat) => stat.type === 'outbound-rtp' && (stat.kind === 'audio' || stat.mediaType === 'audio'),
+  );
+  const remoteInbound = stats.find(
+    (stat) => stat.type === 'remote-inbound-rtp' && (stat.kind === 'audio' || stat.mediaType === 'audio'),
+  );
+
+  return { inbound, outbound, remoteInbound };
+}
+
+function getCodecLabel(report, stat) {
+  const codec = getStat(report, stat?.codecId);
+
+  if (!codec) return 'unknown';
+
+  const mimeType = codec.mimeType || codec.mime || 'unknown';
+  const clockRate = codec.clockRate ? `/${codec.clockRate}` : '';
+
+  return `${mimeType}${clockRate}`;
+}
+
+function getIceLabel(report, pair) {
+  const local = getStat(report, pair?.localCandidateId);
+  const remote = getStat(report, pair?.remoteCandidateId);
+
+  if (!pair || !local || !remote) return 'unknown';
+
+  return `${local.candidateType || 'local'} -> ${remote.candidateType || 'remote'} (${pair.state})`;
+}
+
+function getNetworkQuality({ jitterMs, packetLossPercent, rttMs }) {
+  if (![jitterMs, packetLossPercent, rttMs].some(Number.isFinite)) return 'Waiting';
+  if (packetLossPercent > 5 || jitterMs > 50 || rttMs > 300) return 'Poor';
+  if (packetLossPercent > 2 || jitterMs > 30 || rttMs > 150) return 'Fair';
+  return 'Good';
+}
+
+function setDiagnosticsIdle(message = 'Idle') {
+  diagNetwork.textContent = message;
+  diagAudio.textContent = message;
+  diagCodec.textContent = 'Unknown';
+  diagIce.textContent = 'Unknown';
+  diagDetails.textContent = '';
+}
+
+async function updateDiagnostics() {
+  if (!activeCall) {
+    setDiagnosticsIdle();
+    return;
+  }
+
+  const pc = getPeerConnection(activeCall);
+
+  if (!pc?.getStats) {
+    diagNetwork.textContent = 'Waiting';
+    diagAudio.textContent = 'Waiting for media';
+    diagCodec.textContent = 'Unknown';
+    diagIce.textContent = 'Unknown';
+    diagDetails.textContent = JSON.stringify(
+      {
+        call: summarizeCall(activeCall),
+        localAudioTracks: summarizeAudioTracks(activeCall.localStream),
+        remoteAudioTracks: summarizeAudioTracks(remoteMedia.srcObject || activeCall.remoteStream),
+      },
+      null,
+      2,
+    );
+    return;
+  }
+
+  try {
+    const report = await pc.getStats();
+    const stats = [...report.values()];
+    const pair = getSelectedCandidatePair(stats);
+    const { inbound, outbound, remoteInbound } = getAudioStats(stats);
+    const packetsLost = inbound?.packetsLost ?? 0;
+    const packetsReceived = inbound?.packetsReceived ?? 0;
+    const totalInboundPackets = packetsLost + packetsReceived;
+    const packetLossPercent = totalInboundPackets > 0 ? (packetsLost / totalInboundPackets) * 100 : 0;
+    const jitterMs = Number.isFinite(inbound?.jitter) ? inbound.jitter * 1000 : NaN;
+    const rttMs = Number.isFinite(pair?.currentRoundTripTime)
+      ? pair.currentRoundTripTime * 1000
+      : Number.isFinite(remoteInbound?.roundTripTime)
+        ? remoteInbound.roundTripTime * 1000
+        : NaN;
+    const inboundCodec = getCodecLabel(report, inbound);
+    const outboundCodec = getCodecLabel(report, outbound);
+    const iceLabel = getIceLabel(report, pair);
+    const localAudioTracks = summarizeAudioTracks(activeCall.localStream);
+    const remoteAudioTracks = summarizeAudioTracks(remoteMedia.srcObject || activeCall.remoteStream);
+    const networkQuality = getNetworkQuality({ jitterMs, packetLossPercent, rttMs });
+    const remoteTrackSummary = remoteAudioTracks.length
+      ? `${remoteAudioTracks.length} remote track${remoteAudioTracks.length === 1 ? '' : 's'}`
+      : 'No remote track';
+
+    diagNetwork.textContent = `${networkQuality} (${formatPercent(packetLossPercent)} loss, ${formatMs(jitterMs)} jitter)`;
+    diagAudio.textContent = `${remoteTrackSummary}, sink ${remoteMedia.sinkId || 'system-default'}`;
+    diagCodec.textContent = inboundCodec === outboundCodec ? inboundCodec : `in ${inboundCodec}, out ${outboundCodec}`;
+    diagIce.textContent = iceLabel;
+    diagDetails.textContent = JSON.stringify(
+      {
+        call: summarizeCall(activeCall),
+        peerConnection: {
+          connectionState: pc.connectionState,
+          iceConnectionState: pc.iceConnectionState,
+          iceGatheringState: pc.iceGatheringState,
+          signalingState: pc.signalingState,
+        },
+        network: {
+          quality: networkQuality,
+          packetLoss: formatPercent(packetLossPercent),
+          packetsLost,
+          packetsReceived,
+          jitter: formatMs(jitterMs),
+          roundTripTime: formatMs(rttMs),
+          bytesReceived: formatBytes(inbound?.bytesReceived),
+          bytesSent: formatBytes(outbound?.bytesSent),
+        },
+        codecs: {
+          inbound: inboundCodec,
+          outbound: outboundCodec,
+        },
+        ice: {
+          route: iceLabel,
+          bytesSent: formatBytes(pair?.bytesSent),
+          bytesReceived: formatBytes(pair?.bytesReceived),
+        },
+        audio: {
+          outputDeviceId: remoteMedia.sinkId || 'system-default',
+          remoteElementPaused: remoteMedia.paused,
+          remoteElementMuted: remoteMedia.muted,
+          remoteElementVolume: remoteMedia.volume,
+          localAudioTracks,
+          remoteAudioTracks,
+        },
+      },
+      null,
+      2,
+    );
+  } catch (error) {
+    console.warn('[Telnyx Dialer] Unable to collect call diagnostics', error);
+    diagNetwork.textContent = 'Stats unavailable';
+    diagDetails.textContent = JSON.stringify({ error: error.message }, null, 2);
+  }
+}
+
+function startDiagnostics() {
+  stopDiagnostics(false);
+  diagnosticsPanel.hidden = false;
+  updateDiagnostics();
+  diagnosticsTimer = window.setInterval(updateDiagnostics, 1000);
+}
+
+function stopDiagnostics(reset = true) {
+  if (diagnosticsTimer) {
+    window.clearInterval(diagnosticsTimer);
+    diagnosticsTimer = null;
+  }
+
+  if (reset) setDiagnosticsIdle();
 }
 
 async function ensureRemoteAudioPlaying(context) {
@@ -556,6 +773,7 @@ async function connect() {
             setMessage('Call ended normally.');
           }
 
+          stopDiagnostics(false);
           activeCall = null;
           setCallStatus('Idle');
         }
@@ -602,6 +820,7 @@ function placeCall(destinationNumber) {
     console.info('[Telnyx Dialer] Placing call', callOptions);
     activeCall = client.newCall(callOptions);
     console.info('[Telnyx Dialer] Call created', summarizeCall(activeCall));
+    startDiagnostics();
 
     setCallStatus('Calling');
     setMessage(`Calling ${destinationNumber}...`);
@@ -623,6 +842,7 @@ function hangup() {
   activeCall = null;
   setCallStatus('Idle');
   setMessage('Call ended.');
+  stopDiagnostics(false);
   updateButtons();
 }
 
@@ -678,6 +898,7 @@ navigator.mediaDevices?.addEventListener?.('devicechange', () => {
 });
 
 window.addEventListener('beforeunload', () => {
+  stopDiagnostics();
   stopMicTest();
   activeCall?.hangup();
   client?.disconnect();
@@ -688,3 +909,4 @@ refreshAudioDevices().catch((error) => {
 });
 
 updateButtons();
+setDiagnosticsIdle();

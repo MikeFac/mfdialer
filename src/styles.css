@@ -57,6 +57,55 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.diagnostics-panel {
+  margin-bottom: 20px;
+  padding: 12px;
+  border: 1px solid #d8dde6;
+  border-radius: 6px;
+  background: #fbfcfe;
+}
+
+.diagnostics-panel h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.diagnostics-grid div {
+  min-width: 0;
+}
+
+.diagnostics-grid span {
+  display: block;
+  margin-bottom: 2px;
+  color: #657086;
+  font-size: 12px;
+}
+
+.diagnostics-grid strong {
+  display: block;
+  min-height: 20px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+#diagDetails {
+  max-height: 180px;
+  margin: 10px 0 0;
+  padding-top: 10px;
+  overflow: auto;
+  border-top: 1px solid #e6e9ef;
+  color: #4f5a6e;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
 label {
   display: block;
   margin-bottom: 8px;
