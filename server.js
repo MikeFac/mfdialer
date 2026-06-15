@@ -2,7 +2,10 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { clerkMiddleware } from '@clerk/express';
 import { createServer as createViteServer } from 'vite';
+import { apiRouter } from './src/server/api.js';
+import { clerkIsConfigured, requireAppContext } from './src/server/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -10,7 +13,16 @@ const port = Number(process.env.PORT || 3400);
 const host = process.env.HOST || '127.0.0.1';
 const isProduction = process.env.NODE_ENV === 'production';
 
-app.get('/api/telnyx-credentials', (req, res) => {
+if (clerkIsConfigured()) {
+  app.use(clerkMiddleware());
+}
+
+app.use('/api', apiRouter);
+
+app.get('/api/telnyx-credentials', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
   const loginToken = process.env.TELNYX_LOGIN_TOKEN?.trim();
   const login = process.env.TELNYX_SIP_USERNAME?.trim();
   const password = process.env.TELNYX_SIP_PASSWORD?.trim();

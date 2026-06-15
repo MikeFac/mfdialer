@@ -1,0 +1,486 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum MembershipRole {
+  owner
+  admin
+  agent
+}
+
+enum CampaignStatus {
+  draft
+  active
+  paused
+  archived
+}
+
+enum RecordingDefault {
+  off
+  on
+  ask_each_call
+}
+
+enum ContactStatus {
+  new
+  queued
+  called
+  callback
+  qualified
+  bad_number
+  do_not_call
+  archived
+}
+
+enum CampaignMemberStatus {
+  queued
+  called
+  callback
+  completed
+  skipped
+  blocked
+}
+
+enum SuppressionType {
+  do_not_call
+  bad_number
+  wrong_number
+  blocked
+}
+
+enum SuppressionScope {
+  number
+  contact
+}
+
+enum CallDirection {
+  outbound
+  inbound
+}
+
+enum CallStatus {
+  preparing
+  blocked
+  dialing
+  ringing
+  active
+  completed
+  failed
+  canceled
+}
+
+enum CallOutcome {
+  no_answer
+  left_voicemail
+  answered
+  interested
+  not_interested
+  callback_requested
+  do_not_call
+  wrong_number
+  bad_number
+  gatekeeper
+  needs_follow_up
+}
+
+enum CallbackStatus {
+  open
+  completed
+  canceled
+}
+
+enum ImportStatus {
+  previewed
+  committed
+  failed
+}
+
+enum RecordingStatus {
+  requested
+  recording
+  complete
+  failed
+}
+
+enum TranscriptStatus {
+  not_requested
+  queued
+  processing
+  complete
+  failed
+}
+
+model Workspace {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships      WorkspaceMembership[]
+  campaigns        Campaign[]
+  tags             Tag[]
+  contacts         Contact[]
+  phoneNumbers     PhoneNumber[]
+  callAttempts     CallAttempt[]
+  suppressions     SuppressionEntry[]
+  callNotes        CallNote[]
+  callbacks        CallbackReminder[]
+  imports          ImportBatch[]
+  importRows       ImportRow[]
+  callRecordings   CallRecording[]
+  callTranscripts  CallTranscript[]
+}
+
+model User {
+  id          String   @id @default(uuid())
+  clerkUserId String   @unique
+  email       String   @unique
+  name        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships       WorkspaceMembership[]
+  campaignsCreated  Campaign[]          @relation("CampaignCreatedBy")
+  assignedMembers   CampaignMember[]    @relation("CampaignMemberAssignee")
+  addedSuppressions SuppressionEntry[]   @relation("SuppressionAddedBy")
+  callAttempts      CallAttempt[]       @relation("CallAttemptAgent")
+  callNotes         CallNote[]          @relation("CallNoteAuthor")
+  callbacks         CallbackReminder[]  @relation("CallbackAssignee")
+}
+
+model WorkspaceMembership {
+  id          String         @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        MembershipRole @default(agent)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Campaign {
+  id               String           @id @default(uuid())
+  workspaceId      String
+  name             String
+  description      String?
+  status           CampaignStatus   @default(draft)
+  recordingDefault RecordingDefault @default(off)
+  maxAttempts      Int              @default(3)
+  createdByUserId  String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  workspace     Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy     User?            @relation("CampaignCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  members       CampaignMember[]
+  callAttempts  CallAttempt[]
+  importBatches ImportBatch[]
+  tags          Tag[]            @relation("CampaignTags")
+
+  @@index([workspaceId, status])
+}
+
+model Tag {
+  id          String   @id @default(uuid())
+  workspaceId String
+  name        String
+  color       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts  Contact[]  @relation("ContactTags")
+  campaigns Campaign[] @relation("CampaignTags")
+
+  @@unique([workspaceId, name])
+}
+
+model Contact {
+  id           String        @id @default(uuid())
+  workspaceId  String
+  businessName String
+  contactName  String?
+  email        String?
+  website      String?
+  address      String?
+  city         String?
+  state        String?
+  status       ContactStatus @default(new)
+  notes        String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  workspace       Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  phoneNumbers    ContactPhoneNumber[]
+  campaignMembers CampaignMember[]
+  suppressions    SuppressionEntry[]
+  callAttempts    CallAttempt[]
+  callNotes       CallNote[]
+  callbacks       CallbackReminder[]
+  tags            Tag[]                 @relation("ContactTags")
+
+  @@index([workspaceId, businessName])
+  @@index([workspaceId, status])
+}
+
+model PhoneNumber {
+  id               String   @id @default(uuid())
+  workspaceId       String
+  rawNumber         String
+  normalizedNumber  String
+  countryCode       String?
+  isValid           Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace       Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts        ContactPhoneNumber[]
+  suppressions    SuppressionEntry[]
+  callAttempts    CallAttempt[]
+  callbacks       CallbackReminder[]
+
+  @@unique([workspaceId, normalizedNumber])
+  @@index([workspaceId, isValid])
+}
+
+model ContactPhoneNumber {
+  id            String  @id @default(uuid())
+  workspaceId   String
+  contactId     String
+  phoneNumberId String
+  label         String?
+  isPrimary     Boolean @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  contact     Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  phoneNumber PhoneNumber @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, phoneNumberId])
+  @@index([workspaceId])
+  @@index([phoneNumberId])
+}
+
+model CampaignMember {
+  id                String               @id @default(uuid())
+  workspaceId        String
+  campaignId         String
+  contactId          String
+  status             CampaignMemberStatus @default(queued)
+  priority           Int                  @default(0)
+  assignedToUserId   String?
+  attemptCount       Int                  @default(0)
+  lastAttemptAt      DateTime?
+  nextCallbackAt     DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  campaign       Campaign           @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact        Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  assignedTo     User?              @relation("CampaignMemberAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  callAttempts   CallAttempt[]
+  callbacks      CallbackReminder[]
+
+  @@unique([campaignId, contactId])
+  @@index([workspaceId, status, priority])
+  @@index([assignedToUserId])
+}
+
+model SuppressionEntry {
+  id             String           @id @default(uuid())
+  workspaceId    String
+  phoneNumberId  String?
+  contactId      String?
+  normalizedNumber String?
+  type           SuppressionType
+  reason         String?
+  source         String?
+  scope          SuppressionScope
+  addedByUserId  String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  phoneNumber  PhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  contact      Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  addedBy      User?        @relation("SuppressionAddedBy", fields: [addedByUserId], references: [id], onDelete: SetNull)
+  callAttempts CallAttempt[]
+
+  @@index([workspaceId, type])
+  @@index([workspaceId, normalizedNumber])
+  @@index([contactId])
+}
+
+model CallAttempt {
+  id                          String        @id @default(uuid())
+  workspaceId                  String
+  campaignId                   String?
+  campaignMemberId             String?
+  contactId                    String?
+  phoneNumberId                String?
+  agentUserId                  String?
+  direction                    CallDirection @default(outbound)
+  status                       CallStatus    @default(preparing)
+  outcome                      CallOutcome?
+  startedAt                    DateTime      @default(now())
+  answeredAt                   DateTime?
+  endedAt                      DateTime?
+  durationSeconds              Int?
+  telnyxSessionId              String?
+  telnyxLegId                  String?
+  telnyxCallControlId          String?
+  sipCode                      Int?
+  sipReason                    String?
+  failureReason                String?
+  recordingRequested           Boolean       @default(false)
+  recordingConsentChecked      Boolean       @default(false)
+  blockedBySuppressionEntryId  String?
+  createdAt                    DateTime      @default(now())
+  updatedAt                    DateTime      @updatedAt
+
+  workspace                 Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign                  Campaign?         @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  campaignMember            CampaignMember?   @relation(fields: [campaignMemberId], references: [id], onDelete: SetNull)
+  contact                   Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  phoneNumber               PhoneNumber?      @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  agent                     User?             @relation("CallAttemptAgent", fields: [agentUserId], references: [id], onDelete: SetNull)
+  blockedBySuppressionEntry SuppressionEntry? @relation(fields: [blockedBySuppressionEntryId], references: [id], onDelete: SetNull)
+  notes                     CallNote[]
+  recordings                CallRecording[]
+  transcripts               CallTranscript[]
+
+  @@index([workspaceId, startedAt])
+  @@index([workspaceId, status])
+  @@index([campaignId])
+  @@index([contactId])
+}
+
+model CallNote {
+  id            String   @id @default(uuid())
+  workspaceId   String
+  callAttemptId String?
+  contactId     String?
+  authorUserId  String?
+  body          String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  callAttempt CallAttempt? @relation(fields: [callAttemptId], references: [id], onDelete: Cascade)
+  contact     Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  author      User?        @relation("CallNoteAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([contactId])
+}
+
+model CallbackReminder {
+  id               String         @id @default(uuid())
+  workspaceId       String
+  campaignMemberId  String?
+  contactId         String
+  phoneNumberId     String?
+  assignedToUserId  String?
+  dueAt             DateTime
+  status            CallbackStatus @default(open)
+  note              String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaignMember CampaignMember? @relation(fields: [campaignMemberId], references: [id], onDelete: SetNull)
+  contact        Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  phoneNumber    PhoneNumber?   @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  assignedTo     User?          @relation("CallbackAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, status, dueAt])
+  @@index([assignedToUserId])
+}
+
+model ImportBatch {
+  id              String       @id @default(uuid())
+  workspaceId      String
+  campaignId       String?
+  filename         String?
+  status           ImportStatus @default(previewed)
+  totalRows        Int          @default(0)
+  committedRows    Int          @default(0)
+  invalidRows      Int          @default(0)
+  duplicateRows    Int          @default(0)
+  suppressedRows   Int          @default(0)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaign  Campaign?  @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  rows      ImportRow[]
+
+  @@index([workspaceId, createdAt])
+}
+
+model ImportRow {
+  id          String   @id @default(uuid())
+  workspaceId String
+  importBatchId String
+  rowIndex    Int
+  rawData     String
+  status      String
+  message     String?
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  importBatch ImportBatch @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@index([importBatchId, rowIndex])
+}
+
+model CallRecording {
+  id                   String          @id @default(uuid())
+  workspaceId           String
+  callAttemptId         String
+  provider             String?
+  providerRecordingId  String?
+  url                  String?
+  status               RecordingStatus @default(requested)
+  durationSeconds      Int?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  callAttempt CallAttempt      @relation(fields: [callAttemptId], references: [id], onDelete: Cascade)
+  transcripts CallTranscript[]
+
+  @@index([workspaceId, status])
+  @@index([callAttemptId])
+}
+
+model CallTranscript {
+  id              String           @id @default(uuid())
+  workspaceId      String
+  callRecordingId  String?
+  callAttemptId    String
+  provider         String?
+  status           TranscriptStatus @default(not_requested)
+  text             String?
+  summary          String?
+  error            String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  callRecording CallRecording? @relation(fields: [callRecordingId], references: [id], onDelete: SetNull)
+  callAttempt   CallAttempt    @relation(fields: [callAttemptId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status])
+  @@index([callAttemptId])
+}

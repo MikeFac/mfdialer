@@ -6,14 +6,27 @@
   "scripts": {
     "dev": "node server.js",
     "build": "vite build",
-    "preview": "node server.js"
+    "preview": "node server.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@clerk/clerk-react": "^5.61.8",
+    "@clerk/express": "^2.1.26",
+    "@prisma/adapter-better-sqlite3": "^7.8.0",
+    "@prisma/client": "^7.8.0",
     "@telnyx/webrtc": "^2.27.1",
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "libphonenumber-js": "^1.13.6",
+    "lucide-react": "^1.18.0",
+    "papaparse": "^5.5.3",
+    "prisma": "^7.8.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
     "vite": "^6.0.7",
     "webrtc-adapter": "^9.0.1"
-  },
-  "devDependencies": {}
+  }
 }
