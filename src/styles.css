@@ -432,8 +432,88 @@ th {
   align-self: start;
 }
 
+.outcome-panel {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #aab2c0;
+  border-radius: 8px;
+  background: #f6f8fc;
+}
+
+.outcome-panel h3 {
+  margin: 0 0 14px;
+  font-size: 16px;
+}
+
 .empty {
   color: #657086;
+}
+
+.import-upload {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 6px;
+  background: #172033;
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.import-upload:hover {
+  background: #1e2a42;
+}
+
+.import-upload.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.single-column {
+  display: grid;
+  gap: 18px;
+  max-width: 720px;
+}
+
+.selected-row {
+  background: #e8f0fe !important;
+}
+
+.selected-row:hover,
+.clickable-row:hover {
+  background: #f0f3f8;
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.dnc-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #f1a7a1;
+  color: #7a271a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 8px;
+  color: #4f5a6e;
+  font-size: 14px;
+}
+
+.collapsible-toggle {
+  width: 100%;
+  margin-bottom: 14px;
 }
 
 @media (max-width: 980px) {

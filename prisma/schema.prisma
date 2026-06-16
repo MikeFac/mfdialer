@@ -216,6 +216,7 @@ model Contact {
   city         String?
   state        String?
   status       ContactStatus @default(new)
+  doNotCall    Boolean       @default(false)
   notes        String?
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt

@@ -1,15 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TelnyxRTC } from '@telnyx/webrtc';
+import Papa from 'papaparse';
 import {
   BarChart3,
   Ban,
   BookUser,
+  ChevronLeft,
   Headphones,
   History,
   ListChecks,
   Phone,
   Plus,
   RefreshCw,
+  Upload,
 } from 'lucide-react';
 
 const terminalCallStates = new Set(['done', 'hangup', 'destroy', 'purge', 9, 10, 11]);
@@ -298,6 +301,13 @@ function App({ authHeader, userMenu }) {
     notes: '',
   });
   const [dncForm, setDncForm] = useState({ phoneNumber: '', reason: '' });
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [showCreateCampaign, setShowCreateCampaign] = useState(false);
+  const [campaignMembers, setCampaignMembers] = useState([]);
+  const [selectedContactId, setSelectedContactId] = useState(null);
+  const [contactDetail, setContactDetail] = useState(null);
+  const [callOutcome, setCallOutcome] = useState({ outcome: '', notes: '', doNotCall: false, callbackDueAt: '', callbackNote: '' });
 
   const clientRef = useRef(null);
   const activeCallRef = useRef(null);
@@ -370,6 +380,64 @@ function App({ authHeader, userMenu }) {
   useEffect(() => {
     loadData().catch((loadError) => reportError('Unable to load app data', loadError));
   }, [loadData, reportError]);
+
+  const loadCampaignMembers = useCallback(async () => {
+    if (!selectedCampaignId) {
+      setCampaignMembers([]);
+      return;
+    }
+    try {
+      const body = await api(`/api/campaigns/${selectedCampaignId}/members`);
+      setCampaignMembers(body.members || []);
+    } catch {
+      setCampaignMembers([]);
+    }
+  }, [api, selectedCampaignId]);
+
+  useEffect(() => {
+    loadCampaignMembers();
+  }, [loadCampaignMembers]);
+
+  const loadContactDetail = useCallback(async () => {
+    if (!selectedContactId) {
+      setContactDetail(null);
+      return;
+    }
+    try {
+      const body = await api(`/api/contacts/${selectedContactId}`);
+      setContactDetail(body);
+    } catch {
+      setContactDetail(null);
+    }
+  }, [api, selectedContactId]);
+
+  useEffect(() => {
+    loadContactDetail();
+  }, [loadContactDetail]);
+
+  const submitCallOutcome = useCallback(
+    async (callAttemptId, contactId) => {
+      try {
+        await api(`/api/call-attempts/${callAttemptId}/outcome`, {
+          method: 'POST',
+          body: JSON.stringify({
+            outcome: callOutcome.outcome || undefined,
+            notes: callOutcome.notes || undefined,
+            doNotCall: callOutcome.doNotCall || undefined,
+            callbackDueAt: callOutcome.callbackDueAt || undefined,
+            callbackNote: callOutcome.callbackNote || undefined,
+            contactId,
+          }),
+        });
+        setCallOutcome({ outcome: '', notes: '', doNotCall: false, callbackDueAt: '', callbackNote: '' });
+        await loadData();
+        if (selectedContactId) await loadContactDetail();
+      } catch (outcomeError) {
+        reportError('Unable to save call outcome', outcomeError);
+      }
+    },
+    [api, callOutcome, loadData, loadContactDetail, reportError, selectedContactId],
+  );
 
   const supportsAudioOutputSelection = useCallback(() => {
     return typeof remoteMediaRef.current?.setSinkId === 'function';
@@ -1021,6 +1089,69 @@ function App({ authHeader, userMenu }) {
     [api, dncForm, loadData],
   );
 
+  const importCsv = useCallback(
+    async (event) => {
+      const file = event.target.files?.[0];
+      if (!file || !selectedCampaignId) return;
+
+      setImporting(true);
+      setImportResult(null);
+
+      try {
+        const parsed = await new Promise((resolve, reject) => {
+          Papa.parse(file, {
+            header: true,
+            skipEmptyLines: true,
+            complete: (result) => resolve(result),
+            error: (err) => reject(err),
+          });
+        });
+
+        const contacts = parsed.data.map((row) => {
+          const address = row.address || '';
+          let city = row.city || '';
+          let state = row.state || '';
+          if (!city && address) {
+            const parts = address.split(',');
+            if (parts.length >= 3) {
+              const cityState = parts[parts.length - 2].trim();
+              const stateZip = parts[parts.length - 1].trim();
+              city = cityState;
+              state = stateZip.split(/\s+/)[0] || state;
+            }
+          }
+
+          const notes = [row.rating ? `Rating: ${row.rating}` : '', row.reviews ? `Reviews: ${row.reviews}` : '', row.place_id ? `Place ID: ${row.place_id}` : ''].filter(Boolean).join('\n');
+
+          return {
+            businessName: row.name || row.businessName || '',
+            phoneNumbers: [row.phone, row.phone2, row.phone_2].filter(Boolean),
+            website: row.website || null,
+            address: address || null,
+            city: city || null,
+            state: state || null,
+            notes: notes || null,
+          };
+        });
+
+        const result = await api(`/api/campaigns/${selectedCampaignId}/import`, {
+          method: 'POST',
+          body: JSON.stringify({ contacts }),
+        });
+
+        setImportResult(result);
+        await loadData();
+        await loadCampaignMembers();
+      } catch (importError) {
+        setImportResult({ error: importError.body?.error || importError.message || 'Import failed.' });
+      } finally {
+        setImporting(false);
+        event.target.value = '';
+      }
+    },
+    [api, loadData, loadCampaignMembers, selectedCampaignId],
+  );
+
   const loadNextContact = useCallback(async () => {
     if (!selectedCampaignId) {
       setMessage('Select a campaign first.');
@@ -1065,7 +1196,7 @@ function App({ authHeader, userMenu }) {
                 key={item.id}
                 className={view === item.id ? 'active' : ''}
                 type="button"
-                onClick={() => setView(item.id)}
+                onClick={() => { setView(item.id); setSelectedContactId(null); setContactDetail(null); }}
               >
                 <Icon size={17} />
                 {item.label}
@@ -1090,7 +1221,114 @@ function App({ authHeader, userMenu }) {
           </div>
         </header>
 
-        {view === 'dashboard' && (
+        {selectedContactId && contactDetail && (
+          <section className="single-column">
+            <section className="panel">
+              <button className="secondary" type="button" onClick={() => { setSelectedContactId(null); setContactDetail(null); }}>
+                <ChevronLeft size={16} />
+                Back
+              </button>
+              <h2>{contactDetail.contact.businessName || 'Contact'}</h2>
+              {contactDetail.contact.contactName && (
+                <p style={{ color: '#4f5a6e', margin: '0 0 8px' }}>{contactDetail.contact.contactName}</p>
+              )}
+              <div className="detail-meta">
+                <span>Status: {contactDetail.contact.status}</span>
+                {contactDetail.contact.doNotCall && <span className="dnc-badge">Do Not Call</span>}
+                {contactDetail.contact.email && <span>{contactDetail.contact.email}</span>}
+                {contactDetail.contact.website && <span>{contactDetail.contact.website}</span>}
+              </div>
+              <div className="detail-meta" style={{ marginTop: 8 }}>
+                {contactDetail.contact.address && <span>{contactDetail.contact.address}</span>}
+                {contactDetail.contact.city && <span>{contactDetail.contact.city}</span>}
+                {contactDetail.contact.state && <span>{contactDetail.contact.state}</span>}
+              </div>
+              <div className="detail-meta" style={{ marginTop: 8 }}>
+                {contactDetail.contact.phoneNumbers?.map((n) => (
+                  <span key={n.id}>{n.normalizedNumber}{n.isPrimary ? ' (primary)' : ''}</span>
+                ))}
+              </div>
+              {contactDetail.contact.notes && (
+                <div style={{ marginTop: 12 }}>
+                  <strong>Notes</strong>
+                  <p style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>{contactDetail.contact.notes}</p>
+                </div>
+              )}
+              {contactDetail.campaigns?.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <strong>Campaigns</strong>
+                  <div className="detail-meta" style={{ marginTop: 4 }}>
+                    {contactDetail.campaigns.map((c) => (
+                      <span key={c.id}>{c.name} ({c.status})</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {contactDetail.callAttempts?.length > 0 && (
+              <section className="panel">
+                <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>Call history</h3>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Status</th>
+                        <th>Outcome</th>
+                        <th>Duration</th>
+                        <th>Phone</th>
+                        <th>Campaign</th>
+                        <th>Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {contactDetail.callAttempts.map((call) => (
+                        <tr key={call.id}>
+                          <td>{new Date(call.startedAt).toLocaleString()}</td>
+                          <td>{call.status}</td>
+                          <td>{call.outcome || '-'}</td>
+                          <td>{call.durationSeconds ? `${call.durationSeconds}s` : '-'}</td>
+                          <td>{call.phoneNumber || '-'}</td>
+                          <td>{call.campaignName || '-'}</td>
+                          <td>{call.notes?.map((n) => n.body).join('; ') || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+
+            {contactDetail.callbacks?.length > 0 && (
+              <section className="panel">
+                <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>Callbacks</h3>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Due</th>
+                        <th>Status</th>
+                        <th>Note</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {contactDetail.callbacks.map((cb) => (
+                        <tr key={cb.id}>
+                          <td>{new Date(cb.dueAt).toLocaleString()}</td>
+                          <td>{cb.status}</td>
+                          <td>{cb.note || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+          </section>
+        )}
+
+        {!selectedContactId && view === 'dashboard' && (
           <section className="panel">
             <div className="metric-grid">
               <Metric label="Campaigns" value={metrics.campaigns || 0} />
@@ -1260,6 +1498,71 @@ function App({ authHeader, userMenu }) {
                     Hang up
                   </button>
                 </div>
+
+                {callAttemptRef.current && !activeCallRef.current && callStatus === 'Idle' && (
+                  <section className="outcome-panel">
+                    <h3>Call outcome</h3>
+                    <Field label="Outcome">
+                      <select
+                        value={callOutcome.outcome}
+                        onChange={(event) => setCallOutcome((prev) => ({ ...prev, outcome: event.target.value }))}
+                      >
+                        <option value="">Select outcome</option>
+                        <option value="answered">Answered</option>
+                        <option value="no_answer">No answer</option>
+                        <option value="left_voicemail">Left voicemail</option>
+                        <option value="interested">Interested</option>
+                        <option value="not_interested">Not interested</option>
+                        <option value="callback_requested">Callback requested</option>
+                        <option value="gatekeeper">Gatekeeper</option>
+                        <option value="needs_follow_up">Needs follow up</option>
+                        <option value="wrong_number">Wrong number</option>
+                        <option value="bad_number">Bad number</option>
+                        <option value="do_not_call">Do not call</option>
+                      </select>
+                    </Field>
+                    <Field label="Notes">
+                      <textarea
+                        value={callOutcome.notes}
+                        onChange={(event) => setCallOutcome((prev) => ({ ...prev, notes: event.target.value }))}
+                        placeholder="Call notes..."
+                      />
+                    </Field>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, fontWeight: 700, color: '#4f5a6e' }}>
+                      <input
+                        type="checkbox"
+                        checked={callOutcome.doNotCall}
+                        onChange={(event) => setCallOutcome((prev) => ({ ...prev, doNotCall: event.target.checked }))}
+                      />
+                      Do not call again
+                    </label>
+                    {callOutcome.outcome === 'callback_requested' && (
+                      <>
+                        <Field label="Callback date">
+                          <input
+                            type="datetime-local"
+                            value={callOutcome.callbackDueAt}
+                            onChange={(event) => setCallOutcome((prev) => ({ ...prev, callbackDueAt: event.target.value }))}
+                          />
+                        </Field>
+                        <Field label="Callback note">
+                          <input
+                            value={callOutcome.callbackNote}
+                            onChange={(event) => setCallOutcome((prev) => ({ ...prev, callbackNote: event.target.value }))}
+                            placeholder="Reason for callback"
+                          />
+                        </Field>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      disabled={!callOutcome.outcome}
+                      onClick={() => submitCallOutcome(callAttemptRef.current?.id, dialContact?.id)}
+                    >
+                      Save outcome
+                    </button>
+                  </section>
+                )}
               </form>
 
               <p className="message" role="status">
@@ -1278,120 +1581,229 @@ function App({ authHeader, userMenu }) {
           </section>
         )}
 
-        {view === 'campaigns' && (
-          <section className="split-view">
-            <form className="panel form-panel" onSubmit={createCampaign}>
-              <h2>Create campaign</h2>
-              <Field label="Name">
-                <input
-                  value={campaignForm.name}
-                  onChange={(event) => setCampaignForm((current) => ({ ...current, name: event.target.value }))}
-                  required
-                />
-              </Field>
-              <Field label="Description">
-                <textarea
-                  value={campaignForm.description}
-                  onChange={(event) =>
-                    setCampaignForm((current) => ({ ...current, description: event.target.value }))
-                  }
-                />
-              </Field>
-              <Field label="Recording default">
-                <select
-                  value={campaignForm.recordingDefault}
-                  onChange={(event) =>
-                    setCampaignForm((current) => ({ ...current, recordingDefault: event.target.value }))
-                  }
-                >
-                  <option value="off">Off</option>
-                  <option value="on">On</option>
-                  <option value="ask_each_call">Ask each call</option>
+        {!selectedContactId && view === 'campaigns' && !selectedCampaignId && (
+          <section className="single-column">
+            <section className="panel">
+              <button
+                className="secondary collapsible-toggle"
+                type="button"
+                onClick={() => setShowCreateCampaign((prev) => !prev)}
+              >
+                {showCreateCampaign ? 'Hide' : 'Create campaign'}
+              </button>
+              {showCreateCampaign && (
+                <form onSubmit={createCampaign}>
+                  <Field label="Name">
+                    <input
+                      value={campaignForm.name}
+                      onChange={(event) => setCampaignForm((current) => ({ ...current, name: event.target.value }))}
+                      required
+                    />
+                  </Field>
+                  <Field label="Description">
+                    <textarea
+                      value={campaignForm.description}
+                      onChange={(event) =>
+                        setCampaignForm((current) => ({ ...current, description: event.target.value }))
+                      }
+                    />
+                  </Field>
+                  <Field label="Recording default">
+                    <select
+                      value={campaignForm.recordingDefault}
+                      onChange={(event) =>
+                        setCampaignForm((current) => ({ ...current, recordingDefault: event.target.value }))
+                      }
+                    >
+                      <option value="off">Off</option>
+                      <option value="on">On</option>
+                      <option value="ask_each_call">Ask each call</option>
+                    </select>
+                  </Field>
+                  <button type="submit">
+                    <Plus size={16} />
+                    Add campaign
+                  </button>
+                </form>
+              )}
+            </section>
+
+            <section className="panel">
+              <h2>Import CSV</h2>
+              <p style={{ color: '#657086', fontSize: 14, margin: '0 0 12px' }}>
+                Select a campaign, then upload a CSV file with columns: name, phone, address, website, rating, reviews.
+              </p>
+              <Field label="Target campaign">
+                <select value={selectedCampaignId} onChange={(event) => setSelectedCampaignId(event.target.value)}>
+                  <option value="">Select a campaign</option>
+                  {campaigns.map((campaign) => (
+                    <option key={campaign.id} value={campaign.id}>
+                      {campaign.name}
+                    </option>
+                  ))}
                 </select>
               </Field>
-              <button type="submit">
-                <Plus size={16} />
-                Add campaign
-              </button>
-            </form>
+              <label className={`import-upload${!selectedCampaignId ? ' disabled' : ''}`}>
+                <Upload size={16} />
+                {importing ? 'Importing...' : 'Choose CSV file'}
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={importCsv}
+                  disabled={!selectedCampaignId || importing}
+                  style={{ display: 'none' }}
+                />
+              </label>
+              {importResult && !importResult.error && (
+                <p style={{ color: '#137333', fontSize: 14, margin: '8px 0 0' }}>
+                  Imported {importResult.committedRows || importResult.importBatch?.committedRows} of{' '}
+                  {importResult.totalRows || importResult.importBatch?.totalRows} contacts.
+                  {importResult.invalidRows || importResult.importBatch?.invalidRows
+                    ? ` ${importResult.invalidRows || importResult.importBatch?.invalidRows} skipped.`
+                    : ''}
+                </p>
+              )}
+              {importResult?.error && (
+                <p style={{ color: '#b42318', fontSize: 14, margin: '8px 0 0' }}>
+                  {importResult.error}
+                </p>
+              )}
+            </section>
+
             <section className="panel">
               <h2>Campaigns</h2>
-              <DataTable
-                rows={campaigns}
-                columns={[
-                  ['name', 'Name'],
-                  ['status', 'Status'],
-                  ['recordingDefault', 'Recording'],
-                  ['members', 'Members'],
-                  ['calls', 'Calls'],
-                ]}
-              />
+              {campaigns.length === 0 ? (
+                <p className="empty">No campaigns yet.</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Status</th>
+                        <th>Members</th>
+                        <th>Calls</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {campaigns.map((campaign) => (
+                        <tr
+                          key={campaign.id}
+                          className="clickable-row"
+                          onClick={() => setSelectedCampaignId(campaign.id)}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <td>{campaign.name || '-'}</td>
+                          <td>{campaign.status || '-'}</td>
+                          <td>{campaign.members || 0}</td>
+                          <td>{campaign.calls || 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
           </section>
         )}
 
-        {view === 'contacts' && (
-          <section className="split-view">
-            <form className="panel form-panel" onSubmit={createContact}>
-              <h2>Add contact</h2>
-              <Field label="Business name">
-                <input
-                  value={contactForm.businessName}
-                  onChange={(event) => setContactForm((current) => ({ ...current, businessName: event.target.value }))}
-                  required
-                />
-              </Field>
-              <Field label="Contact name">
-                <input
-                  value={contactForm.contactName}
-                  onChange={(event) => setContactForm((current) => ({ ...current, contactName: event.target.value }))}
-                />
-              </Field>
-              <Field label="Phone numbers">
-                <input
-                  value={contactForm.phoneNumbers}
-                  onChange={(event) => setContactForm((current) => ({ ...current, phoneNumbers: event.target.value }))}
-                  placeholder="+15551234567, +15557654321"
-                />
-              </Field>
-              <Field label="Email">
-                <input
-                  value={contactForm.email}
-                  onChange={(event) => setContactForm((current) => ({ ...current, email: event.target.value }))}
-                />
-              </Field>
-              <Field label="Website">
-                <input
-                  value={contactForm.website}
-                  onChange={(event) => setContactForm((current) => ({ ...current, website: event.target.value }))}
-                />
-              </Field>
-              <Field label="Notes">
-                <textarea
-                  value={contactForm.notes}
-                  onChange={(event) => setContactForm((current) => ({ ...current, notes: event.target.value }))}
-                />
-              </Field>
-              <button type="submit">
-                <Plus size={16} />
-                Add contact
-              </button>
-            </form>
+        {!selectedContactId && view === 'campaigns' && selectedCampaignId && (() => {
+          const campaign = campaigns.find((c) => c.id === selectedCampaignId);
+          return (
+            <section className="single-column">
+              <section className="panel">
+                <button className="secondary" type="button" onClick={() => setSelectedCampaignId('')}>
+                  <ChevronLeft size={16} />
+                  All campaigns
+                </button>
+                <h2>{campaign?.name || 'Campaign'}</h2>
+                {campaign?.description && <p style={{ color: '#657086', fontSize: 14, margin: '0 0 4px' }}>{campaign.description}</p>}
+                <div className="detail-meta">
+                  <span>Status: {campaign?.status || '-'}</span>
+                  <span>Recording: {campaign?.recordingDefault || '-'}</span>
+                  <span>Members: {campaign?.members || 0}</span>
+                  <span>Calls: {campaign?.calls || 0}</span>
+                </div>
+              </section>
+
+              <section className="panel">
+                <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>Contacts</h3>
+                {campaignMembers.length === 0 ? (
+                  <p className="empty">No contacts in this campaign yet.</p>
+                ) : (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Business</th>
+                          <th>Contact</th>
+                          <th>Phone</th>
+                          <th>Queue status</th>
+                          <th>Attempts</th>
+                          <th>Last called</th>
+                          <th>Last outcome</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {campaignMembers.map((member) => (
+                          <tr key={member.id} className="clickable-row" onClick={() => setSelectedContactId(member.contact.id)} style={{ cursor: 'pointer' }}>
+                            <td>{member.contact.businessName || '-'}</td>
+                            <td>{member.contact.contactName || '-'}</td>
+                            <td>{member.contact.phoneNumbers?.[0]?.normalizedNumber || '-'}</td>
+                            <td>{member.status}</td>
+                            <td>{member.attemptCount}</td>
+                            <td>{member.lastCall?.startedAt
+                              ? new Date(member.lastCall.startedAt).toLocaleDateString()
+                              : '-'}</td>
+                            <td>{member.lastCall?.outcome || member.lastCall?.status || '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            </section>
+          );
+        })()}
+
+        {!selectedContactId && view === 'contacts' && (
+          <section className="single-column">
             <section className="panel">
               <h2>Contacts</h2>
-              <DataTable
-                rows={contacts.map((contact) => ({
-                  ...contact,
-                  phone: contact.phoneNumbers?.map((number) => number.normalizedNumber).join(', '),
-                }))}
-                columns={[
-                  ['businessName', 'Business'],
-                  ['contactName', 'Contact'],
-                  ['phone', 'Phone'],
-                  ['status', 'Status'],
-                  ['email', 'Email'],
-                ]}
-              />
+              {contacts.length === 0 ? (
+                <p className="empty">No contacts yet.</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Business</th>
+                        <th>Contact</th>
+                        <th>Phone</th>
+                        <th>Status</th>
+                        <th>DNC</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {contacts.map((contact) => (
+                        <tr
+                          key={contact.id}
+                          className="clickable-row"
+                          onClick={() => setSelectedContactId(contact.id)}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <td>{contact.businessName || '-'}</td>
+                          <td>{contact.contactName || '-'}</td>
+                          <td>{contact.phoneNumbers?.map((n) => n.normalizedNumber).join(', ') || '-'}</td>
+                          <td>{contact.status}</td>
+                          <td>{contact.doNotCall ? 'Yes' : ''}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
           </section>
         )}
