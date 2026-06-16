@@ -308,6 +308,9 @@ function App({ authHeader, userMenu }) {
   const [selectedContactId, setSelectedContactId] = useState(null);
   const [contactDetail, setContactDetail] = useState(null);
   const [callOutcome, setCallOutcome] = useState({ outcome: '', notes: '', doNotCall: false, callbackDueAt: '', callbackNote: '' });
+  const [editingContact, setEditingContact] = useState(false);
+  const [contactSearch, setContactSearch] = useState('');
+  const [contactEditForm, setContactEditForm] = useState({});
 
   const clientRef = useRef(null);
   const activeCallRef = useRef(null);
@@ -414,6 +417,25 @@ function App({ authHeader, userMenu }) {
   useEffect(() => {
     loadContactDetail();
   }, [loadContactDetail]);
+
+  useEffect(() => {
+    if (contactDetail?.contact) {
+      const c = contactDetail.contact;
+      setContactEditForm({
+        businessName: c.businessName || '',
+        contactName: c.contactName || '',
+        email: c.email || '',
+        website: c.website || '',
+        address: c.address || '',
+        city: c.city || '',
+        state: c.state || '',
+        status: c.status || 'new',
+        doNotCall: c.doNotCall || false,
+        notes: c.notes || '',
+      });
+      setEditingContact(false);
+    }
+  }, [contactDetail]);
 
   const submitCallOutcome = useCallback(
     async (callAttemptId, contactId) => {
@@ -1221,112 +1243,174 @@ function App({ authHeader, userMenu }) {
           </div>
         </header>
 
-        {selectedContactId && contactDetail && (
-          <section className="single-column">
-            <section className="panel">
-              <button className="secondary" type="button" onClick={() => { setSelectedContactId(null); setContactDetail(null); }}>
-                <ChevronLeft size={16} />
-                Back
-              </button>
-              <h2>{contactDetail.contact.businessName || 'Contact'}</h2>
-              {contactDetail.contact.contactName && (
-                <p style={{ color: '#4f5a6e', margin: '0 0 8px' }}>{contactDetail.contact.contactName}</p>
-              )}
-              <div className="detail-meta">
-                <span>Status: {contactDetail.contact.status}</span>
-                {contactDetail.contact.doNotCall && <span className="dnc-badge">Do Not Call</span>}
-                {contactDetail.contact.email && <span>{contactDetail.contact.email}</span>}
-                {contactDetail.contact.website && <span>{contactDetail.contact.website}</span>}
-              </div>
-              <div className="detail-meta" style={{ marginTop: 8 }}>
-                {contactDetail.contact.address && <span>{contactDetail.contact.address}</span>}
-                {contactDetail.contact.city && <span>{contactDetail.contact.city}</span>}
-                {contactDetail.contact.state && <span>{contactDetail.contact.state}</span>}
-              </div>
-              <div className="detail-meta" style={{ marginTop: 8 }}>
-                {contactDetail.contact.phoneNumbers?.map((n) => (
-                  <span key={n.id}>{n.normalizedNumber}{n.isPrimary ? ' (primary)' : ''}</span>
-                ))}
-              </div>
-              {contactDetail.contact.notes && (
-                <div style={{ marginTop: 12 }}>
-                  <strong>Notes</strong>
-                  <p style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>{contactDetail.contact.notes}</p>
-                </div>
-              )}
-              {contactDetail.campaigns?.length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  <strong>Campaigns</strong>
-                  <div className="detail-meta" style={{ marginTop: 4 }}>
-                    {contactDetail.campaigns.map((c) => (
-                      <span key={c.id}>{c.name} ({c.status})</span>
-                    ))}
+        {selectedContactId && contactDetail && (() => {
+          const c = contactDetail.contact;
+          return (
+            <section className="single-column">
+              <section className="panel">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <button className="secondary" type="button" onClick={() => { setSelectedContactId(null); setContactDetail(null); setEditingContact(false); }}>
+                      <ChevronLeft size={16} />
+                      Back
+                    </button>
                   </div>
+                  <button className="secondary" type="button" onClick={() => setEditingContact((prev) => !prev)}>
+                    {editingContact ? 'Cancel' : 'Edit'}
+                  </button>
                 </div>
+
+                {editingContact ? (
+                  <form onSubmit={(e) => { e.preventDefault(); saveContactEdit(c.id, contactEditForm); }}>
+                    <Field label="Business name">
+                      <input value={contactEditForm.businessName} onChange={(e) => setContactEditForm((f) => ({ ...f, businessName: e.target.value }))} required />
+                    </Field>
+                    <Field label="Contact name">
+                      <input value={contactEditForm.contactName} onChange={(e) => setContactEditForm((f) => ({ ...f, contactName: e.target.value }))} />
+                    </Field>
+                    <Field label="Email">
+                      <input value={contactEditForm.email} onChange={(e) => setContactEditForm((f) => ({ ...f, email: e.target.value }))} />
+                    </Field>
+                    <Field label="Website">
+                      <input value={contactEditForm.website} onChange={(e) => setContactEditForm((f) => ({ ...f, website: e.target.value }))} />
+                    </Field>
+                    <Field label="Address">
+                      <input value={contactEditForm.address} onChange={(e) => setContactEditForm((f) => ({ ...f, address: e.target.value }))} />
+                    </Field>
+                    <div className="form-row" style={{ gap: 8 }}>
+                      <Field label="City">
+                        <input value={contactEditForm.city} onChange={(e) => setContactEditForm((f) => ({ ...f, city: e.target.value }))} />
+                      </Field>
+                      <Field label="State">
+                        <input value={contactEditForm.state} onChange={(e) => setContactEditForm((f) => ({ ...f, state: e.target.value }))} />
+                      </Field>
+                    </div>
+                    <Field label="Status">
+                      <select value={contactEditForm.status} onChange={(e) => setContactEditForm((f) => ({ ...f, status: e.target.value }))}>
+                        <option value="new">New</option>
+                        <option value="queued">Queued</option>
+                        <option value="called">Called</option>
+                        <option value="callback">Callback</option>
+                        <option value="qualified">Qualified</option>
+                        <option value="bad_number">Bad number</option>
+                        <option value="do_not_call">Do not call</option>
+                        <option value="archived">Archived</option>
+                      </select>
+                    </Field>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, fontWeight: 700, color: '#4f5a6e' }}>
+                      <input type="checkbox" checked={contactEditForm.doNotCall} onChange={(e) => setContactEditForm((f) => ({ ...f, doNotCall: e.target.checked }))} />
+                      Do not call
+                    </label>
+                    <Field label="Notes">
+                      <textarea value={contactEditForm.notes} onChange={(e) => setContactEditForm((f) => ({ ...f, notes: e.target.value }))} />
+                    </Field>
+                    <button type="submit">
+                      <Plus size={16} />
+                      Save changes
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    <h2>{c.businessName || 'Contact'}</h2>
+                    {c.contactName && <p style={{ color: '#4f5a6e', margin: '0 0 8px' }}>{c.contactName}</p>}
+                    <div className="detail-meta">
+                      <span>Status: {c.status}</span>
+                      {c.doNotCall && <span className="dnc-badge">Do Not Call</span>}
+                      {c.email && <span>{c.email}</span>}
+                      {c.website && <span>{c.website}</span>}
+                    </div>
+                    <div className="detail-meta" style={{ marginTop: 8 }}>
+                      {c.address && <span>{c.address}</span>}
+                      {c.city && <span>{c.city}</span>}
+                      {c.state && <span>{c.state}</span>}
+                    </div>
+                    <div className="detail-meta" style={{ marginTop: 8 }}>
+                      {c.phoneNumbers?.map((n) => (
+                        <span key={n.id}>{n.normalizedNumber}{n.isPrimary ? ' (primary)' : ''}</span>
+                      ))}
+                    </div>
+                    {c.notes && (
+                      <div style={{ marginTop: 12 }}>
+                        <strong>Notes</strong>
+                        <p style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0' }}>{c.notes}</p>
+                      </div>
+                    )}
+                    {contactDetail.campaigns?.length > 0 && (
+                      <div style={{ marginTop: 12 }}>
+                        <strong>Campaigns</strong>
+                        <div className="detail-meta" style={{ marginTop: 4 }}>
+                          {contactDetail.campaigns.map((camp) => (
+                            <span key={camp.id}>{camp.name} ({camp.status})</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </section>
+
+              {contactDetail.callAttempts?.length > 0 && (
+                <section className="panel">
+                  <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>Call history</h3>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Status</th>
+                          <th>Outcome</th>
+                          <th>Duration</th>
+                          <th>Phone</th>
+                          <th>Campaign</th>
+                          <th>Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {contactDetail.callAttempts.map((call) => (
+                          <tr key={call.id}>
+                            <td>{new Date(call.startedAt).toLocaleString()}</td>
+                            <td>{call.status}</td>
+                            <td>{call.outcome || '-'}</td>
+                            <td>{call.durationSeconds ? `${call.durationSeconds}s` : '-'}</td>
+                            <td>{call.phoneNumber || '-'}</td>
+                            <td>{call.campaignName || '-'}</td>
+                            <td>{call.notes?.map((n) => n.body).join('; ') || '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+
+              {contactDetail.callbacks?.length > 0 && (
+                <section className="panel">
+                  <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>Callbacks</h3>
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Due</th>
+                          <th>Status</th>
+                          <th>Note</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {contactDetail.callbacks.map((cb) => (
+                          <tr key={cb.id}>
+                            <td>{new Date(cb.dueAt).toLocaleString()}</td>
+                            <td>{cb.status}</td>
+                            <td>{cb.note || '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
               )}
             </section>
-
-            {contactDetail.callAttempts?.length > 0 && (
-              <section className="panel">
-                <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>Call history</h3>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Status</th>
-                        <th>Outcome</th>
-                        <th>Duration</th>
-                        <th>Phone</th>
-                        <th>Campaign</th>
-                        <th>Notes</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {contactDetail.callAttempts.map((call) => (
-                        <tr key={call.id}>
-                          <td>{new Date(call.startedAt).toLocaleString()}</td>
-                          <td>{call.status}</td>
-                          <td>{call.outcome || '-'}</td>
-                          <td>{call.durationSeconds ? `${call.durationSeconds}s` : '-'}</td>
-                          <td>{call.phoneNumber || '-'}</td>
-                          <td>{call.campaignName || '-'}</td>
-                          <td>{call.notes?.map((n) => n.body).join('; ') || '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            )}
-
-            {contactDetail.callbacks?.length > 0 && (
-              <section className="panel">
-                <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>Callbacks</h3>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Due</th>
-                        <th>Status</th>
-                        <th>Note</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {contactDetail.callbacks.map((cb) => (
-                        <tr key={cb.id}>
-                          <td>{new Date(cb.dueAt).toLocaleString()}</td>
-                          <td>{cb.status}</td>
-                          <td>{cb.note || '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            )}
-          </section>
-        )}
+          );
+        })()}}
 
         {!selectedContactId && view === 'dashboard' && (
           <section className="panel">
@@ -1378,9 +1462,21 @@ function App({ authHeader, userMenu }) {
                       ))}
                     </select>
                   </Field>
-                  <button className="secondary align-end" type="button" onClick={loadNextContact}>
-                    Next contact
-                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="secondary align-end" type="button" onClick={loadNextContact}>
+                      Next
+                    </button>
+                    {currentQueueMember && (
+                      <>
+                        <button className="secondary" type="button" onClick={() => skipQueueMember(currentQueueMember.id)} style={{ background: '#6b5b00' }}>
+                          Skip
+                        </button>
+                        <button className="secondary" type="button" onClick={() => callbackQueueMember(currentQueueMember.id, 1)} style={{ background: '#2d5a2d' }}>
+                          Callback 1h
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 {dialContact && (
@@ -1724,6 +1820,33 @@ function App({ authHeader, userMenu }) {
                   <span>Members: {campaign?.members || 0}</span>
                   <span>Calls: {campaign?.calls || 0}</span>
                 </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                  {campaign?.status === 'active' && (
+                    <>
+                      <button className="secondary" type="button" onClick={() => updateCampaignStatus(campaign.id, 'paused')} style={{ background: '#8a6d00' }}>
+                        Pause campaign
+                      </button>
+                      <button className="secondary" type="button" onClick={() => updateCampaignStatus(campaign.id, 'archived')} style={{ background: '#8a2020' }}>
+                        Archive
+                      </button>
+                    </>
+                  )}
+                  {campaign?.status === 'paused' && (
+                    <>
+                      <button className="secondary" type="button" onClick={() => updateCampaignStatus(campaign.id, 'active')} style={{ background: '#2d5a2d' }}>
+                        Resume
+                      </button>
+                      <button className="secondary" type="button" onClick={() => updateCampaignStatus(campaign.id, 'archived')} style={{ background: '#8a2020' }}>
+                        Archive
+                      </button>
+                    </>
+                  )}
+                  {campaign?.status === 'archived' && (
+                    <button className="secondary" type="button" onClick={() => updateCampaignStatus(campaign.id, 'active')} style={{ background: '#2d5a2d' }}>
+                      Reactivate
+                    </button>
+                  )}
+                </div>
               </section>
 
               <section className="panel">
@@ -1771,6 +1894,13 @@ function App({ authHeader, userMenu }) {
           <section className="single-column">
             <section className="panel">
               <h2>Contacts</h2>
+              <Field label="Search">
+                <input
+                  value={contactSearch}
+                  onChange={(event) => setContactSearch(event.target.value)}
+                  placeholder="Search by name or email..."
+                />
+              </Field>
               {contacts.length === 0 ? (
                 <p className="empty">No contacts yet.</p>
               ) : (
@@ -1786,20 +1916,31 @@ function App({ authHeader, userMenu }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {contacts.map((contact) => (
-                        <tr
-                          key={contact.id}
-                          className="clickable-row"
-                          onClick={() => setSelectedContactId(contact.id)}
-                          style={{ cursor: 'pointer' }}
-                        >
-                          <td>{contact.businessName || '-'}</td>
-                          <td>{contact.contactName || '-'}</td>
-                          <td>{contact.phoneNumbers?.map((n) => n.normalizedNumber).join(', ') || '-'}</td>
-                          <td>{contact.status}</td>
-                          <td>{contact.doNotCall ? 'Yes' : ''}</td>
-                        </tr>
-                      ))}
+                      {contacts
+                        .filter((c) => {
+                          if (!contactSearch) return true;
+                          const q = contactSearch.toLowerCase();
+                          return (
+                            (c.businessName || '').toLowerCase().includes(q) ||
+                            (c.contactName || '').toLowerCase().includes(q) ||
+                            (c.email || '').toLowerCase().includes(q) ||
+                            c.phoneNumbers?.some((n) => n.normalizedNumber.includes(q))
+                          );
+                        })
+                        .map((contact) => (
+                          <tr
+                            key={contact.id}
+                            className="clickable-row"
+                            onClick={() => setSelectedContactId(contact.id)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <td>{contact.businessName || '-'}</td>
+                            <td>{contact.contactName || '-'}</td>
+                            <td>{contact.phoneNumbers?.map((n) => n.normalizedNumber).join(', ') || '-'}</td>
+                            <td>{contact.status}</td>
+                            <td>{contact.doNotCall ? 'Yes' : ''}</td>
+                          </tr>
+                        ))}
                     </tbody>
                   </table>
                 </div>

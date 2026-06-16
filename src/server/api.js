@@ -205,6 +205,82 @@ apiRouter.post('/campaigns', async (req, res) => {
   res.status(201).json({ campaign });
 });
 
+apiRouter.patch('/campaigns/:id', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const allowed = ['name', 'description', 'status', 'recordingDefault', 'maxAttempts'];
+  const data = Object.fromEntries(
+    Object.entries(req.body || {}).filter(([key, value]) => allowed.includes(key) && value !== undefined),
+  );
+
+  if (Object.keys(data).length === 0) {
+    return res.status(400).json({ error: 'No valid fields to update.' });
+  }
+
+  const campaign = await prisma.campaign.updateMany({
+    where: { id: req.params.id, workspaceId: context.workspace.id },
+    data,
+  });
+
+  if (campaign.count === 0) {
+    return res.status(404).json({ error: 'Campaign not found.' });
+  }
+
+  const updated = await prisma.campaign.findUnique({ where: { id: req.params.id } });
+  res.json({ campaign: updated });
+});
+
+apiRouter.patch('/campaigns/:campaignId/members/:memberId', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const { status, nextCallbackAt } = req.body || {};
+  const allowedStatuses = ['queued', 'callback', 'called', 'completed', 'skipped', 'blocked'];
+
+  if (status && !allowedStatuses.includes(status)) {
+    return res.status(400).json({ error: `Invalid status. Allowed: ${allowedStatuses.join(', ')}` });
+  }
+
+  const member = await prisma.campaignMember.findFirst({
+    where: { id: req.params.memberId, campaignId: req.params.campaignId, workspaceId: context.workspace.id },
+  });
+
+  if (!member) {
+    return res.status(404).json({ error: 'Campaign member not found.' });
+  }
+
+  const updateData = {};
+  if (status) updateData.status = status;
+  if (nextCallbackAt) updateData.nextCallbackAt = new Date(nextCallbackAt);
+  if (status === 'skipped' || status === 'completed' || status === 'blocked') {
+    updateData.lastAttemptAt = new Date();
+  }
+
+  const updated = await prisma.campaignMember.update({
+    where: { id: member.id },
+    data: updateData,
+  });
+
+  res.json({ member: updated });
+});
+
+apiRouter.delete('/campaigns/:campaignId/members/:memberId', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const member = await prisma.campaignMember.findFirst({
+    where: { id: req.params.memberId, campaignId: req.params.campaignId, workspaceId: context.workspace.id },
+  });
+
+  if (!member) {
+    return res.status(404).json({ error: 'Campaign member not found.' });
+  }
+
+  await prisma.campaignMember.delete({ where: { id: member.id } });
+  res.json({ deleted: true });
+});
+
 apiRouter.get('/contacts', async (req, res) => {
   const context = await requireAppContext(req, res);
   if (!context) return;
