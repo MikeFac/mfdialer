@@ -9,6 +9,7 @@ import {
   Headphones,
   History,
   ListChecks,
+  Merge,
   Phone,
   Plus,
   RefreshCw,
@@ -311,6 +312,8 @@ function App({ authHeader, userMenu }) {
   const [editingContact, setEditingContact] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
   const [contactEditForm, setContactEditForm] = useState({});
+  const [duplicateGroups, setDuplicateGroups] = useState(null);
+  const [merging, setMerging] = useState(false);
 
   const clientRef = useRef(null);
   const activeCallRef = useRef(null);
@@ -452,13 +455,52 @@ function App({ authHeader, userMenu }) {
           }),
         });
         setCallOutcome({ outcome: '', notes: '', doNotCall: false, callbackDueAt: '', callbackNote: '' });
+        callAttemptRef.current = null;
         await loadData();
         if (selectedContactId) await loadContactDetail();
+        if (selectedCampaignId) {
+          const body = await api(`/api/campaigns/${selectedCampaignId}/queue/next`);
+          setCurrentQueueMember(body.member);
+          const firstNumber = body.member?.contact?.phoneNumbers?.[0]?.normalizedNumber;
+          if (firstNumber) setPhoneNumber(firstNumber);
+          setRecordingRequested(body.member?.campaign?.recordingDefault === 'on');
+          setMessage(body.member ? `Loaded ${body.member.contact.businessName}.` : 'No more queued contacts.');
+        }
       } catch (outcomeError) {
         reportError('Unable to save call outcome', outcomeError);
       }
     },
-    [api, callOutcome, loadData, loadContactDetail, reportError, selectedContactId],
+    [api, callOutcome, loadData, loadContactDetail, reportError, selectedCampaignId, selectedContactId],
+  );
+
+  const findDuplicates = useCallback(async () => {
+    try {
+      const body = await api('/api/contacts/duplicates');
+      setDuplicateGroups(body);
+    } catch (err) {
+      reportError('Unable to find duplicates', err);
+    }
+  }, [api, reportError]);
+
+  const mergeContacts = useCallback(
+    async (primaryId, mergeIds) => {
+      try {
+        setMerging(true);
+        await api('/api/contacts/merge', {
+          method: 'POST',
+          body: JSON.stringify({ primaryId, mergeIds }),
+        });
+        setDuplicateGroups(null);
+        await loadData();
+        if (selectedContactId) await loadContactDetail();
+        setMessage(`Merged ${mergeIds.length} contacts.`);
+      } catch (err) {
+        reportError('Unable to merge contacts', err);
+      } finally {
+        setMerging(false);
+      }
+    },
+    [api, loadData, loadContactDetail, reportError, selectedContactId],
   );
 
   const supportsAudioOutputSelection = useCallback(() => {
@@ -1755,7 +1797,10 @@ function App({ authHeader, userMenu }) {
                   Imported {importResult.committedRows || importResult.importBatch?.committedRows} of{' '}
                   {importResult.totalRows || importResult.importBatch?.totalRows} contacts.
                   {importResult.invalidRows || importResult.importBatch?.invalidRows
-                    ? ` ${importResult.invalidRows || importResult.importBatch?.invalidRows} skipped.`
+                    ? ` ${importResult.invalidRows || importResult.importBatch?.invalidRows} invalid.`
+                    : ''}
+                  {importResult.duplicateRows || importResult.importBatch?.duplicateRows
+                    ? ` ${importResult.duplicateRows || importResult.importBatch?.duplicateRows} merged into existing.`
                     : ''}
                 </p>
               )}
@@ -1893,7 +1938,13 @@ function App({ authHeader, userMenu }) {
         {!selectedContactId && view === 'contacts' && (
           <section className="single-column">
             <section className="panel">
-              <h2>Contacts</h2>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ margin: 0 }}>Contacts</h2>
+                <button className="secondary" type="button" onClick={findDuplicates} disabled={!!duplicateGroups}>
+                  <Merge size={16} />
+                  Find duplicates
+                </button>
+              </div>
               <Field label="Search">
                 <input
                   value={contactSearch}
@@ -1946,6 +1997,69 @@ function App({ authHeader, userMenu }) {
                 </div>
               )}
             </section>
+
+            {duplicateGroups && (
+              <section className="panel">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h2 style={{ margin: 0 }}>Duplicates</h2>
+                  <button className="secondary" type="button" onClick={() => setDuplicateGroups(null)}>
+                    Close
+                  </button>
+                </div>
+                {(duplicateGroups.phoneDuplicates?.length || 0) === 0 && (duplicateGroups.nameDuplicates?.length || 0) === 0 ? (
+                  <p className="empty">No duplicates found.</p>
+                ) : (
+                  <>
+                    {duplicateGroups.phoneDuplicates?.length > 0 && (
+                      <>
+                        <h3 style={{ margin: '14px 0 8px', fontSize: 15 }}>Matching phone numbers</h3>
+                        {duplicateGroups.phoneDuplicates.map((group, gi) => (
+                          <div key={`phone-${gi}`} className="duplicate-group">
+                            <p style={{ margin: '0 0 8px', fontSize: 13, color: '#657086' }}>
+                              Shared number: {group.phone}
+                            </p>
+                            {group.contacts.map((contact) => (
+                              <div key={contact.id} className="duplicate-row">
+                                <span>{contact.businessName}</span>
+                                <span>{contact.contactName || '-'}</span>
+                                <span>{contact.phoneNumbers?.map((n) => n.normalizedNumber).join(', ')}</span>
+                                <span>{contact.status}</span>
+                                <button className="secondary" type="button" style={{ fontSize: 13, minHeight: 28 }} onClick={() => mergeContacts(contact.id, group.contacts.filter((c) => c.id !== contact.id).map((c) => c.id))} disabled={merging}>
+                                  Keep this one
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {duplicateGroups.nameDuplicates?.length > 0 && (
+                      <>
+                        <h3 style={{ margin: '14px 0 8px', fontSize: 15 }}>Matching business names</h3>
+                        {duplicateGroups.nameDuplicates.map((group, gi) => (
+                          <div key={`name-${gi}`} className="duplicate-group">
+                            <p style={{ margin: '0 0 8px', fontSize: 13, color: '#657086' }}>
+                              Shared name: {group.name}
+                            </p>
+                            {group.contacts.map((contact) => (
+                              <div key={contact.id} className="duplicate-row">
+                                <span>{contact.businessName}</span>
+                                <span>{contact.contactName || '-'}</span>
+                                <span>{contact.phoneNumbers?.map((n) => n.normalizedNumber).join(', ') || '-'}</span>
+                                <span>{contact.status}</span>
+                                <button className="secondary" type="button" style={{ fontSize: 13, minHeight: 28 }} onClick={() => mergeContacts(contact.id, group.contacts.filter((c) => c.id !== contact.id).map((c) => c.id))} disabled={merging}>
+                                  Keep this one
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
           </section>
         )}
 

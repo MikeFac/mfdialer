@@ -473,6 +473,27 @@ th {
   cursor: not-allowed;
 }
 
+.duplicate-group {
+  border: 1px solid #d8dde6;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.duplicate-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  font-size: 14px;
+  border-bottom: 1px solid #e6e9ef;
+}
+
+.duplicate-row:last-child {
+  border-bottom: none;
+}
+
 .single-column {
   display: grid;
   gap: 18px;

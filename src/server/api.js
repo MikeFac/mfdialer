@@ -396,6 +396,173 @@ apiRouter.post('/contacts', async (req, res) => {
   res.status(201).json({ contact: serializeContact(created) });
 });
 
+apiRouter.get('/contacts/duplicates', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const allContacts = await prisma.contact.findMany({
+    where: { workspaceId: context.workspace.id },
+    include: {
+      phoneNumbers: {
+        include: { phoneNumber: true },
+        orderBy: { isPrimary: 'desc' },
+      },
+    },
+    orderBy: { businessName: 'asc' },
+  });
+
+  const phoneMap = new Map();
+  for (const contact of allContacts) {
+    for (const entry of contact.phoneNumbers) {
+      const num = entry.phoneNumber.normalizedNumber;
+      if (!num) continue;
+      if (!phoneMap.has(num)) phoneMap.set(num, []);
+      phoneMap.get(num).push(contact);
+    }
+  }
+
+  const groups = [];
+  const seen = new Set();
+  for (const [, contacts] of phoneMap) {
+    if (contacts.length < 2) continue;
+    const ids = contacts.map((c) => c.id).sort();
+    const key = ids.join(',');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    groups.push({
+      phone: contacts[0].phoneNumbers[0]?.phoneNumber.normalizedNumber,
+      contacts: contacts.map(serializeContact),
+    });
+  }
+
+  const nameGroups = [];
+  const nameMap = new Map();
+  for (const contact of allContacts) {
+    const key = contact.businessName.toLowerCase().trim();
+    if (!key) continue;
+    if (!nameMap.has(key)) nameMap.set(key, []);
+    nameMap.get(key).push(contact);
+  }
+  for (const [, contacts] of nameMap) {
+    if (contacts.length < 2) continue;
+    const ids = contacts.map((c) => c.id).sort();
+    const key = `name:${ids.join(',')}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    nameGroups.push({
+      phone: null,
+      name: contacts[0].businessName,
+      contacts: contacts.map(serializeContact),
+    });
+  }
+
+  res.json({ phoneDuplicates: groups, nameDuplicates: nameGroups });
+});
+
+apiRouter.post('/contacts/merge', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const { primaryId, mergeIds } = req.body || {};
+  if (!primaryId || !Array.isArray(mergeIds) || mergeIds.length === 0) {
+    return res.status(400).json({ error: 'Provide primaryId and mergeIds array.' });
+  }
+
+  const allIds = [primaryId, ...mergeIds];
+  const contacts = await prisma.contact.findMany({
+    where: { id: { in: allIds }, workspaceId: context.workspace.id },
+    include: {
+      phoneNumbers: { include: { phoneNumber: true } },
+      campaignMembers: true,
+      callAttempts: true,
+      suppressions: true,
+      callNotes: true,
+      callbacks: true,
+    },
+  });
+
+  const primary = contacts.find((c) => c.id === primaryId);
+  if (!primary) {
+    return res.status(404).json({ error: 'Primary contact not found.' });
+  }
+
+  const toMerge = contacts.filter((c) => c.id !== primaryId);
+  const mergeData = { ...primary };
+
+  for (const contact of toMerge) {
+    if (!mergeData.contactName && contact.contactName) mergeData.contactName = contact.contactName;
+    if (!mergeData.email && contact.email) mergeData.email = contact.email;
+    if (!mergeData.website && contact.website) mergeData.website = contact.website;
+    if (!mergeData.address && contact.address) mergeData.address = contact.address;
+    if (!mergeData.city && contact.city) mergeData.city = contact.city;
+    if (!mergeData.state && contact.state) mergeData.state = contact.state;
+    if (!mergeData.notes && contact.notes) mergeData.notes = contact.notes;
+
+    for (const entry of contact.phoneNumbers) {
+      const existingLink = await prisma.contactPhoneNumber.findFirst({
+        where: { contactId: primary.id, phoneNumberId: entry.phoneNumberId },
+      });
+      if (!existingLink) {
+        await prisma.contactPhoneNumber.create({
+          data: {
+            workspaceId: context.workspace.id,
+            contactId: primary.id,
+            phoneNumberId: entry.phoneNumberId,
+            label: entry.label,
+            isPrimary: false,
+          },
+        });
+      }
+    }
+
+    await prisma.campaignMember.updateMany({
+      where: { contactId: contact.id, workspaceId: context.workspace.id },
+      data: { contactId: primary.id },
+    });
+
+    await prisma.callAttempt.updateMany({
+      where: { contactId: contact.id, workspaceId: context.workspace.id },
+      data: { contactId: primary.id },
+    });
+
+    await prisma.callNote.updateMany({
+      where: { contactId: contact.id, workspaceId: context.workspace.id },
+      data: { contactId: primary.id },
+    });
+
+    await prisma.callbackReminder.updateMany({
+      where: { contactId: contact.id, workspaceId: context.workspace.id },
+      data: { contactId: primary.id },
+    });
+
+    await prisma.suppressionEntry.updateMany({
+      where: { contactId: contact.id, workspaceId: context.workspace.id },
+      data: { contactId: primary.id },
+    });
+
+    await prisma.contact.delete({ where: { id: contact.id } });
+  }
+
+  const fillData = {};
+  for (const [field, value] of Object.entries(mergeData)) {
+    if (['id', 'workspaceId', 'createdAt', 'updatedAt', 'phoneNumbers', 'campaignMembers', 'callAttempts', 'callNotes', 'callbacks', 'suppressions', 'tags'].includes(field)) continue;
+    if (value && !primary[field]) fillData[field] = value;
+  }
+
+  if (Object.keys(fillData).length > 0) {
+    await prisma.contact.update({ where: { id: primary.id }, data: fillData });
+  }
+
+  const updated = await prisma.contact.findUnique({
+    where: { id: primary.id },
+    include: {
+      phoneNumbers: { include: { phoneNumber: true }, orderBy: { isPrimary: 'desc' } },
+    },
+  });
+
+  res.json({ contact: serializeContact(updated), merged: mergeIds.length });
+});
+
 apiRouter.get('/contacts/:id', async (req, res) => {
   const context = await requireAppContext(req, res);
   if (!context) return;
@@ -565,6 +732,35 @@ apiRouter.post('/call-attempts/:id/outcome', async (req, res) => {
       where: { id: callAttempt.contactId },
       data: { doNotCall: true, status: 'do_not_call' },
     });
+
+    const contactNumbers = callAttempt.phoneNumberId
+      ? [{ phoneNumberId: callAttempt.phoneNumberId }]
+      : await prisma.contactPhoneNumber.findMany({
+          where: { contactId: callAttempt.contactId },
+          select: { phoneNumberId: true, phoneNumber: { select: { normalizedNumber: true } } },
+        });
+
+    for (const cn of contactNumbers) {
+      const phone = await prisma.phoneNumber.findUnique({ where: { id: cn.phoneNumberId } });
+      if (!phone?.normalizedNumber) continue;
+      const existing = await prisma.suppressionEntry.findFirst({
+        where: { workspaceId: context.workspace.id, type: 'do_not_call', normalizedNumber: phone.normalizedNumber },
+      });
+      if (existing) continue;
+      await prisma.suppressionEntry.create({
+        data: {
+          workspaceId: context.workspace.id,
+          phoneNumberId: phone.id,
+          contactId: callAttempt.contactId,
+          normalizedNumber: phone.normalizedNumber,
+          type: 'do_not_call',
+          reason: 'Requested via call outcome',
+          source: 'call_outcome',
+          scope: 'contact',
+          addedByUserId: context.user.id,
+        },
+      });
+    }
   }
 
   if (outcome) {
@@ -893,8 +1089,12 @@ apiRouter.post('/campaigns/:id/import', async (req, res) => {
       continue;
     }
 
-    const hasValidPhone = phoneNumbers.some((n) => normalizePhoneNumber(n).normalizedNumber);
-    if (!hasValidPhone) {
+    const normalizedNumbers = phoneNumbers
+      .filter(Boolean)
+      .map((n) => normalizePhoneNumber(n))
+      .filter((n) => n.normalizedNumber);
+
+    if (normalizedNumbers.length === 0) {
       invalidRows++;
       await prisma.importRow.create({
         data: {
@@ -909,34 +1109,94 @@ apiRouter.post('/campaigns/:id/import', async (req, res) => {
       continue;
     }
 
-    const contact = await prisma.contact.create({
-      data: {
+    let contact = null;
+
+    const matchingPhone = await prisma.contactPhoneNumber.findFirst({
+      where: {
         workspaceId: context.workspace.id,
-        businessName,
-        contactName: (row.contactName || null),
-        email: (row.email || null),
-        website: (row.website || null),
-        address: (row.address || null),
-        city: (row.city || null),
-        state: (row.state || null),
-        notes: (row.notes || null),
-        status: 'queued',
+        phoneNumber: { normalizedNumber: { in: normalizedNumbers.map((n) => n.normalizedNumber) } },
       },
+      include: { contact: true },
     });
 
-    for (const [index, rawNumber] of phoneNumbers.filter(Boolean).entries()) {
-      const phoneNumber = await upsertPhoneNumber(context.workspace.id, rawNumber);
-      if (!phoneNumber) continue;
+    if (matchingPhone) {
+      contact = matchingPhone.contact;
+      const updateData = {};
+      const fields = [
+        ['businessName', row.businessName || row.name],
+        ['contactName', row.contactName],
+        ['email', row.email],
+        ['website', row.website],
+        ['address', row.address],
+        ['city', row.city],
+        ['state', row.state],
+        ['notes', row.notes],
+      ];
+      for (const [field, value] of fields) {
+        if (value?.trim() && !contact[field]?.trim()) {
+          updateData[field] = value.trim();
+        }
+      }
+      if (Object.keys(updateData).length > 0) {
+        await prisma.contact.update({
+          where: { id: contact.id },
+          data: updateData,
+        });
+      }
 
-      await prisma.contactPhoneNumber.create({
+      for (const normalized of normalizedNumbers) {
+        const existingLink = await prisma.contactPhoneNumber.findFirst({
+          where: { contactId: contact.id, phoneNumberId: (await prisma.phoneNumber.findUnique({ where: { workspaceId_normalizedNumber: { workspaceId: context.workspace.id, normalizedNumber: normalized.normalizedNumber } } }))?.id },
+        });
+        if (!existingLink) {
+          const phoneNumber = await upsertPhoneNumber(context.workspace.id, normalized.rawNumber);
+          if (phoneNumber) {
+            await prisma.contactPhoneNumber.create({
+              data: {
+                workspaceId: context.workspace.id,
+                contactId: contact.id,
+                phoneNumberId: phoneNumber.id,
+                label: null,
+                isPrimary: false,
+              },
+            });
+          }
+        }
+      }
+
+      duplicateRows++;
+    } else {
+      contact = await prisma.contact.create({
         data: {
           workspaceId: context.workspace.id,
-          contactId: contact.id,
-          phoneNumberId: phoneNumber.id,
-          label: index === 0 ? 'primary' : null,
-          isPrimary: index === 0,
+          businessName,
+          contactName: (row.contactName || null),
+          email: (row.email || null),
+          website: (row.website || null),
+          address: (row.address || null),
+          city: (row.city || null),
+          state: (row.state || null),
+          notes: (row.notes || null),
+          status: 'queued',
         },
       });
+
+      for (const [index, normalized] of normalizedNumbers.entries()) {
+        const phoneNumber = await upsertPhoneNumber(context.workspace.id, normalized.rawNumber);
+        if (!phoneNumber) continue;
+
+        await prisma.contactPhoneNumber.create({
+          data: {
+            workspaceId: context.workspace.id,
+            contactId: contact.id,
+            phoneNumberId: phoneNumber.id,
+            label: index === 0 ? 'primary' : null,
+            isPrimary: index === 0,
+          },
+        });
+      }
+
+      committedRows++;
     }
 
     await prisma.campaignMember.upsert({
@@ -954,19 +1214,18 @@ apiRouter.post('/campaigns/:id/import', async (req, res) => {
       },
     });
 
-    committedRows++;
     await prisma.importRow.create({
       data: {
         workspaceId: context.workspace.id,
         importBatchId: importBatch.id,
         rowIndex: i,
         rawData: JSON.stringify(row),
-        status: 'committed',
-        message: null,
+        status: matchingPhone ? 'duplicate' : 'committed',
+        message: matchingPhone ? `Merged into existing contact: ${contact.businessName}` : null,
       },
     });
 
-    results.push({ id: contact.id, businessName });
+    results.push({ id: contact.id, businessName: contact.businessName, merged: !!matchingPhone });
   }
 
   await prisma.importBatch.update({
@@ -980,7 +1239,7 @@ apiRouter.post('/campaigns/:id/import', async (req, res) => {
   });
 
   res.status(201).json({
-    importBatch: { id: importBatch.id, totalRows: contacts.length, committedRows, invalidRows },
+    importBatch: { id: importBatch.id, totalRows: contacts.length, committedRows, invalidRows, duplicateRows },
     contacts: results,
   });
 });
