@@ -6,13 +6,16 @@ import {
   Ban,
   BookUser,
   ChevronLeft,
+  Download,
   Headphones,
   History,
+  Link,
   ListChecks,
   Merge,
   Phone,
   Plus,
   RefreshCw,
+  Send,
   Upload,
 } from 'lucide-react';
 
@@ -43,6 +46,7 @@ const navItems = [
   { id: 'contacts', label: 'Contacts', icon: BookUser },
   { id: 'dnc', label: 'DNC', icon: Ban },
   { id: 'history', label: 'Call history', icon: History },
+  { id: 'integrations', label: 'Integrations', icon: Link },
 ];
 
 function compactObject(value) {
@@ -262,11 +266,21 @@ function Field({ label, children }) {
   );
 }
 
+function downloadCsv(url, filename) {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 function App({ authHeader, userMenu }) {
   const [view, setView] = useState('dialer');
   const [me, setMe] = useState(null);
   const [dashboard, setDashboard] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
+  const [campaignReport, setCampaignReport] = useState(null);
   const [contacts, setContacts] = useState([]);
   const [suppressions, setSuppressions] = useState([]);
   const [callAttempts, setCallAttempts] = useState([]);
@@ -314,6 +328,11 @@ function App({ authHeader, userMenu }) {
   const [contactEditForm, setContactEditForm] = useState({});
   const [duplicateGroups, setDuplicateGroups] = useState(null);
   const [merging, setMerging] = useState(false);
+  const [webhookEndpoints, setWebhookEndpoints] = useState([]);
+  const [webhookEvents, setWebhookEvents] = useState([]);
+  const [webhookForm, setWebhookForm] = useState({ name: '', url: '', secret: '', active: true, subscriptions: [] });
+  const [showWebhookForm, setShowWebhookForm] = useState(false);
+  const [editingWebhookId, setEditingWebhookId] = useState(null);
 
   const clientRef = useRef(null);
   const activeCallRef = useRef(null);
@@ -381,6 +400,18 @@ function App({ authHeader, userMenu }) {
     setContacts(contactsBody.contacts || []);
     setSuppressions(suppressionsBody.suppressions || []);
     setCallAttempts(callAttemptsBody.callAttempts || []);
+
+    try {
+      const [whBody, evBody] = await Promise.all([
+        api('/api/webhooks'),
+        api('/api/webhooks/events'),
+      ]);
+      setWebhookEndpoints(whBody.endpoints || []);
+      setWebhookEvents(evBody.events || []);
+    } catch {
+      setWebhookEndpoints([]);
+      setWebhookEvents([]);
+    }
   }, [api]);
 
   useEffect(() => {
@@ -390,13 +421,19 @@ function App({ authHeader, userMenu }) {
   const loadCampaignMembers = useCallback(async () => {
     if (!selectedCampaignId) {
       setCampaignMembers([]);
+      setCampaignReport(null);
       return;
     }
     try {
-      const body = await api(`/api/campaigns/${selectedCampaignId}/members`);
-      setCampaignMembers(body.members || []);
+      const [membersBody, reportBody] = await Promise.all([
+        api(`/api/campaigns/${selectedCampaignId}/members`),
+        api(`/api/reports/campaign/${selectedCampaignId}`),
+      ]);
+      setCampaignMembers(membersBody.members || []);
+      setCampaignReport(reportBody);
     } catch {
       setCampaignMembers([]);
+      setCampaignReport(null);
     }
   }, [api, selectedCampaignId]);
 
@@ -502,6 +539,92 @@ function App({ authHeader, userMenu }) {
     },
     [api, loadData, loadContactDetail, reportError, selectedContactId],
   );
+
+  const loadWebhooks = useCallback(async () => {
+    try {
+      const [whBody, evBody] = await Promise.all([
+        api('/api/webhooks'),
+        api('/api/webhooks/events'),
+      ]);
+      setWebhookEndpoints(whBody.endpoints || []);
+      setWebhookEvents(evBody.events || []);
+    } catch (err) {
+      reportError('Unable to load webhooks', err);
+    }
+  }, [api, reportError]);
+
+  const saveWebhook = useCallback(async () => {
+    try {
+      const body = editingWebhookId
+        ? await api(`/api/webhooks/${editingWebhookId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              name: webhookForm.name,
+              url: webhookForm.url,
+              secret: webhookForm.secret || undefined,
+              active: webhookForm.active,
+            }),
+          })
+        : await api('/api/webhooks', {
+            method: 'POST',
+            body: JSON.stringify(webhookForm),
+          });
+
+      const saved = body.endpoint;
+      if (editingWebhookId) {
+        setWebhookEndpoints((prev) => prev.map((ep) => (ep.id === saved.id ? { ...ep, ...saved } : ep)));
+      } else {
+        setWebhookEndpoints((prev) => [saved, ...prev]);
+      }
+
+      if (webhookForm.subscriptions?.length > 0) {
+        await api(`/api/webhooks/${saved.id}/subscriptions`, {
+          method: 'POST',
+          body: JSON.stringify({ subscriptions: webhookForm.subscriptions }),
+        });
+      }
+
+      setShowWebhookForm(false);
+      setEditingWebhookId(null);
+      setWebhookForm({ name: '', url: '', secret: '', active: true, subscriptions: [] });
+      await loadWebhooks();
+      setMessage('Webhook saved.');
+    } catch (err) {
+      reportError('Unable to save webhook', err);
+    }
+  }, [api, editingWebhookId, webhookForm, loadWebhooks, reportError]);
+
+  const deleteWebhook = useCallback(async (id) => {
+    try {
+      await api(`/api/webhooks/${id}`, { method: 'DELETE' });
+      setWebhookEndpoints((prev) => prev.filter((ep) => ep.id !== id));
+      setMessage('Webhook deleted.');
+    } catch (err) {
+      reportError('Unable to delete webhook', err);
+    }
+  }, [api, reportError]);
+
+  const testWebhook = useCallback(async (id) => {
+    try {
+      await api(`/api/webhooks/${id}/test`, { method: 'POST' });
+      setMessage('Test event queued. Check the event log for delivery status.');
+      setTimeout(() => loadWebhooks(), 2000);
+    } catch (err) {
+      reportError('Unable to test webhook', err);
+    }
+  }, [api, loadWebhooks, reportError]);
+
+  const triggerWebhook = useCallback(async (endpointId, callAttemptId) => {
+    try {
+      await api(`/api/webhooks/${endpointId}/trigger`, {
+        method: 'POST',
+        body: JSON.stringify({ callAttemptId }),
+      });
+      setMessage('Webhook triggered.');
+    } catch (err) {
+      reportError('Unable to trigger webhook', err);
+    }
+  }, [api, reportError]);
 
   const supportsAudioOutputSelection = useCallback(() => {
     return typeof remoteMediaRef.current?.setSinkId === 'function';
@@ -1456,14 +1579,25 @@ function App({ authHeader, userMenu }) {
 
         {!selectedContactId && view === 'dashboard' && (
           <section className="panel">
-            <div className="metric-grid">
-              <Metric label="Campaigns" value={metrics.campaigns || 0} />
-              <Metric label="Contacts" value={metrics.contacts || 0} />
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ margin: 0 }}>Dashboard</h2>
+              <button className="secondary" type="button" onClick={() => downloadCsv('/api/reports/summary/export', 'summary-report.csv')}>
+                <Download size={16} />
+                Export report
+              </button>
+            </div>
+            <div className="metric-grid kpi">
+              <Metric label="Total calls" value={metrics.totalCalls || 0} />
+              <Metric label="Answer rate" value={`${metrics.answerRate || 0}%`} />
+              <Metric label="Contact rate" value={`${metrics.contactRate || 0}%`} />
+              <Metric label="Avg duration" value={`${formatDuration(metrics.avgDuration)}`} />
               <Metric label="Calls today" value={metrics.callsToday || 0} />
               <Metric label="Answered today" value={metrics.answeredToday || 0} />
               <Metric label="Callbacks due" value={metrics.callbacksDue || 0} />
               <Metric label="DNC entries" value={metrics.dncCount || 0} />
             </div>
+            <OutcomeFunnel breakdown={metrics.outcomeBreakdown || {}} />
+            <TrendChart trend={metrics.trend || []} />
             <h2>Recent calls</h2>
             <DataTable
               rows={dashboard?.recentCalls || []}
@@ -1472,6 +1606,7 @@ function App({ authHeader, userMenu }) {
                 ['number', 'Number'],
                 ['status', 'Status'],
                 ['outcome', 'Outcome'],
+                ['durationSeconds', 'Duration'],
                 ['campaignName', 'Campaign'],
               ]}
             />
@@ -1699,6 +1834,22 @@ function App({ authHeader, userMenu }) {
                     >
                       Save outcome
                     </button>
+                    {webhookEndpoints.length > 0 && callAttemptRef.current && (
+                      <div style={{ marginTop: 8 }}>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => {
+                            const epId = webhookEndpoints[0].id;
+                            triggerWebhook(epId, callAttemptRef.current.id);
+                          }}
+                          style={{ background: '#4f46e5', color: '#fff' }}
+                        >
+                          <Send size={14} />
+                          Send to n8n
+                        </button>
+                      </div>
+                    )}
                   </section>
                 )}
               </form>
@@ -1894,6 +2045,29 @@ function App({ authHeader, userMenu }) {
                 </div>
               </section>
 
+              {campaignReport && (
+                <section className="panel">
+                  <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>Campaign stats</h3>
+                  <div className="metric-grid kpi">
+                    <Metric label="Total calls" value={campaignReport.stats.totalCalls || 0} />
+                    <Metric label="Answer rate" value={`${campaignReport.stats.answerRate || 0}%`} />
+                    <Metric label="Contact rate" value={`${campaignReport.stats.contactRate || 0}%`} />
+                    <Metric label="Avg duration" value={formatDuration(campaignReport.stats.avgDuration)} />
+                    <Metric label="DNC blocked" value={campaignReport.stats.dncBlocked || 0} />
+                  </div>
+                  {Object.keys(campaignReport.stats.outcomeBreakdown || {}).length > 0 && (
+                    <OutcomeFunnel breakdown={campaignReport.stats.outcomeBreakdown} />
+                  )}
+                  <div className="detail-meta" style={{ marginTop: 8 }}>
+                    <span>Queued: {campaignReport.campaign.memberStatusCounts.queued || 0}</span>
+                    <span>Called: {campaignReport.campaign.memberStatusCounts.called || 0}</span>
+                    <span>Callback: {campaignReport.campaign.memberStatusCounts.callback || 0}</span>
+                    <span>Completed: {campaignReport.campaign.memberStatusCounts.completed || 0}</span>
+                    <span>Skipped: {campaignReport.campaign.memberStatusCounts.skipped || 0}</span>
+                  </div>
+                </section>
+              )}
+
               <section className="panel">
                 <h3 style={{ margin: '0 0 14px', fontSize: 16 }}>Contacts</h3>
                 {campaignMembers.length === 0 ? (
@@ -1940,10 +2114,16 @@ function App({ authHeader, userMenu }) {
             <section className="panel">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h2 style={{ margin: 0 }}>Contacts</h2>
-                <button className="secondary" type="button" onClick={findDuplicates} disabled={!!duplicateGroups}>
-                  <Merge size={16} />
-                  Find duplicates
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button className="secondary" type="button" onClick={() => downloadCsv('/api/contacts/export', 'contacts.csv')}>
+                    <Download size={16} />
+                    Export CSV
+                  </button>
+                  <button className="secondary" type="button" onClick={findDuplicates} disabled={!!duplicateGroups}>
+                    <Merge size={16} />
+                    Find duplicates
+                  </button>
+                </div>
               </div>
               <Field label="Search">
                 <input
@@ -2087,7 +2267,13 @@ function App({ authHeader, userMenu }) {
               </button>
             </form>
             <section className="panel">
-              <h2>DNC / suppression</h2>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ margin: 0 }}>DNC / suppression</h2>
+                <button className="secondary" type="button" onClick={() => downloadCsv('/api/suppressions/export', 'dnc-suppressions.csv')}>
+                  <Download size={16} />
+                  Export CSV
+                </button>
+              </div>
               <DataTable
                 rows={suppressions.map((entry) => ({
                   ...entry,
@@ -2110,7 +2296,13 @@ function App({ authHeader, userMenu }) {
 
         {view === 'history' && (
           <section className="panel">
-            <h2>Call history</h2>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2 style={{ margin: 0 }}>Call history</h2>
+              <button className="secondary" type="button" onClick={() => downloadCsv('/api/call-attempts/export', 'call-history.csv')}>
+                <Download size={16} />
+                Export CSV
+              </button>
+            </div>
             <DataTable
               rows={callAttempts.map((call) => ({
                 ...call,
@@ -2130,7 +2322,229 @@ function App({ authHeader, userMenu }) {
             />
           </section>
         )}
+
+        {view === 'integrations' && (
+          <section className="single-column">
+            <section className="panel">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h2 style={{ margin: 0 }}>Webhook endpoints</h2>
+                <button type="button" onClick={() => { setShowWebhookForm(true); setEditingWebhookId(null); setWebhookForm({ name: '', url: '', secret: '', active: true, subscriptions: [] }); }}>
+                  <Plus size={16} />
+                  Add endpoint
+                </button>
+              </div>
+
+              {showWebhookForm && (
+                <form style={{ marginTop: 16, padding: 16, border: '1px solid #d8dde6', borderRadius: 6 }} onSubmit={(e) => { e.preventDefault(); saveWebhook(); }}>
+                  <h3 style={{ margin: '0 0 12px' }}>{editingWebhookId ? 'Edit endpoint' : 'New webhook endpoint'}</h3>
+                  <Field label="Name">
+                    <input value={webhookForm.name} onChange={(e) => setWebhookForm((f) => ({ ...f, name: e.target.value }))} placeholder="n8n — SalesFu sync" required />
+                  </Field>
+                  <Field label="URL">
+                    <input value={webhookForm.url} onChange={(e) => setWebhookForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://n8n.example.com/webhook/call-complete" required />
+                  </Field>
+                  <Field label="Secret (optional, for HMAC signing)">
+                    <input type="password" value={webhookForm.secret} onChange={(e) => setWebhookForm((f) => ({ ...f, secret: e.target.value }))} placeholder="Leave blank for no signing" />
+                  </Field>
+                  <Field label="Events">
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {EVENT_TYPES.map((t) => (
+                        <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13 }}>
+                          <input
+                            type="checkbox"
+                            checked={webhookForm.subscriptions.includes(t)}
+                            onChange={(e) => setWebhookForm((f) => ({
+                              ...f,
+                              subscriptions: e.target.checked
+                                ? [...f.subscriptions, t]
+                                : f.subscriptions.filter((s) => s !== t),
+                            }))}
+                          />
+                          {t}
+                        </label>
+                      ))}
+                    </div>
+                    <span style={{ fontSize: 12, color: '#657086', display: 'block', marginTop: 4 }}>Leave all unchecked to receive all events.</span>
+                  </Field>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button type="submit">Save</button>
+                    <button type="button" className="secondary" onClick={() => { setShowWebhookForm(false); setEditingWebhookId(null); }}>Cancel</button>
+                  </div>
+                </form>
+              )}
+
+              {webhookEndpoints.length === 0 ? (
+                <p className="empty">No webhook endpoints configured. Add one to send call events to n8n, Zapier, or any HTTP endpoint.</p>
+              ) : (
+                <div className="table-wrap" style={{ marginTop: 16 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>URL</th>
+                        <th>Active</th>
+                        <th>Events</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {webhookEndpoints.map((ep) => (
+                        <tr key={ep.id}>
+                          <td>{ep.name}</td>
+                          <td style={{ fontSize: 13, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ep.url}</td>
+                          <td>{ep.active ? 'Yes' : 'No'}</td>
+                          <td style={{ fontSize: 12 }}>
+                            {ep.subscriptions?.length > 0 ? ep.subscriptions.join(', ') : 'All events'}
+                          </td>
+                          <td style={{ display: 'flex', gap: 4 }}>
+                            <button className="secondary" type="button" onClick={() => testWebhook(ep.id)} style={{ fontSize: 12, padding: '4px 8px' }}>Test</button>
+                            <button className="secondary" type="button" onClick={() => { setEditingWebhookId(ep.id); setWebhookForm({ name: ep.name, url: ep.url, secret: '', active: ep.active, subscriptions: ep.subscriptions || [] }); setShowWebhookForm(true); }} style={{ fontSize: 12, padding: '4px 8px' }}>Edit</button>
+                            <button className="secondary" type="button" onClick={() => { if (confirm('Delete this endpoint?')) deleteWebhook(ep.id); }} style={{ fontSize: 12, padding: '4px 8px', color: '#b91c1c' }}>Delete</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+
+            <section className="panel">
+              <h2 style={{ margin: '0 0 12px' }}>Event log</h2>
+              {webhookEvents.length === 0 ? (
+                <p className="empty">No webhook events yet.</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Event</th>
+                        <th>Endpoint</th>
+                        <th>Status</th>
+                        <th>Attempts</th>
+                        <th>Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {webhookEvents.map((ev) => (
+                        <tr key={ev.id}>
+                          <td style={{ fontSize: 12 }}>{ev.eventType}</td>
+                          <td style={{ fontSize: 12 }}>{ev.endpoint?.name || '-'}</td>
+                          <td>
+                            <span style={{
+                              padding: '2px 8px',
+                              borderRadius: 4,
+                              fontSize: 12,
+                              background: ev.status === 'delivered' ? '#d1fae5' : ev.status === 'failed' ? '#fee2e2' : '#fef3c7',
+                              color: ev.status === 'delivered' ? '#065f46' : ev.status === 'failed' ? '#991b1b' : '#92400e',
+                            }}>
+                              {ev.status}
+                            </span>
+                          </td>
+                          <td>{ev.attempts}</td>
+                          <td style={{ fontSize: 12 }}>{new Date(ev.createdAt).toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+          </section>
+        )}
       </main>
+    </div>
+  );
+}
+
+const OUTCOME_COLORS = {
+  interested: '#16a34a',
+  needs_follow_up: '#2563eb',
+  callback_requested: '#d97706',
+  answered: '#4f46e5',
+  left_voicemail: '#6366f1',
+  no_answer: '#9ca3af',
+  not_interested: '#dc2626',
+  gatekeeper: '#ea580c',
+  do_not_call: '#991b1b',
+  wrong_number: '#7c3aed',
+  bad_number: '#7c3aed',
+};
+
+const EVENT_TYPES = [
+  'call.completed',
+  'call.answered',
+  'call.outcome.interested',
+  'call.outcome.callback_requested',
+  'call.outcome.not_interested',
+  'call.outcome.do_not_call',
+  'contact.dnc_added',
+  'callback.due',
+];
+
+const OUTCOME_LABELS = {
+  interested: 'Interested',
+  needs_follow_up: 'Needs follow-up',
+  callback_requested: 'Callback requested',
+  answered: 'Answered',
+  left_voicemail: 'Left voicemail',
+  no_answer: 'No answer',
+  not_interested: 'Not interested',
+  gatekeeper: 'Gatekeeper',
+  do_not_call: 'Do not call',
+  wrong_number: 'Wrong number',
+  bad_number: 'Bad number',
+};
+
+function formatDuration(seconds) {
+  if (!seconds) return '0s';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function OutcomeFunnel({ breakdown }) {
+  const entries = Object.entries(breakdown);
+  if (entries.length === 0) return null;
+  const max = Math.max(...entries.map(([, v]) => v), 1);
+  const sorted = entries.sort((a, b) => b[1] - a[1]);
+  return (
+    <div className="outcome-funnel">
+      <h3>Outcomes</h3>
+      {sorted.map(([outcome, count]) => (
+        <div key={outcome} className="funnel-bar-row">
+          <span className="funnel-bar-label">{OUTCOME_LABELS[outcome] || outcome}</span>
+          <div className="funnel-bar-track">
+            <div
+              className="funnel-bar-fill"
+              style={{ width: `${(count / max) * 100}%`, background: OUTCOME_COLORS[outcome] || '#4f46e5' }}
+            />
+          </div>
+          <span className="funnel-bar-count">{count}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TrendChart({ trend }) {
+  if (!trend || trend.length === 0) return null;
+  const max = Math.max(...trend.map((d) => d.count), 1);
+  return (
+    <div className="trend-row">
+      <h3>Last 7 days</h3>
+      <div className="trend-bars">
+        {trend.map((d) => (
+          <div key={d.date} className="trend-bar-col">
+            <div
+              className="trend-bar"
+              style={{ height: `${(d.count / max) * 100}%` }}
+              title={`${d.count} calls`}
+            />
+            <span className="trend-bar-date">{d.date.slice(5)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

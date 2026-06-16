@@ -134,6 +134,8 @@ model Workspace {
   importRows       ImportRow[]
   callRecordings   CallRecording[]
   callTranscripts  CallTranscript[]
+  webhookEndpoints  WebhookEndpoint[]
+  webhookEvents     WebhookEvent[]
 }
 
 model User {
@@ -484,4 +486,57 @@ model CallTranscript {
 
   @@index([workspaceId, status])
   @@index([callAttemptId])
+}
+
+model WebhookEndpoint {
+  id          String   @id @default(uuid())
+  workspaceId String
+  name        String
+  url         String
+  secret      String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  subscriptions WebhookSubscription[]
+  events        WebhookEvent[]
+
+  @@index([workspaceId, active])
+}
+
+model WebhookSubscription {
+  id         String @id @default(uuid())
+  endpointId String
+  eventType  String
+
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@unique([endpointId, eventType])
+}
+
+enum WebhookEventStatus {
+  pending
+  delivered
+  failed
+}
+
+model WebhookEvent {
+  id              String             @id @default(uuid())
+  workspaceId     String
+  endpointId      String
+  eventType       String
+  payload         String
+  status          WebhookEventStatus @default(pending)
+  attempts        Int                @default(0)
+  lastAttemptAt   DateTime?
+  responseStatus  Int?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  endpoint   WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status])
+  @@index([endpointId])
 }

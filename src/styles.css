@@ -403,6 +403,95 @@ textarea:focus {
   margin-bottom: 22px;
 }
 
+.metric-grid.kpi {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metric.highlight {
+  border-color: #4f46e5;
+  background: #f0f0ff;
+}
+
+.outcome-funnel {
+  margin-bottom: 22px;
+}
+
+.outcome-funnel h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.funnel-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.funnel-bar-label {
+  width: 120px;
+  text-align: right;
+  font-size: 13px;
+  color: #4f5a6e;
+}
+
+.funnel-bar-track {
+  flex: 1;
+  height: 22px;
+  background: #eef0f4;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.funnel-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s;
+}
+
+.funnel-bar-count {
+  width: 40px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.trend-row {
+  margin-bottom: 22px;
+}
+
+.trend-row h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.trend-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 80px;
+}
+
+.trend-bar-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+}
+
+.trend-bar {
+  width: 100%;
+  min-height: 2px;
+  border-radius: 3px 3px 0 0;
+  background: #4f46e5;
+  transition: height 0.3s;
+}
+
+.trend-bar-date {
+  font-size: 11px;
+  color: #657086;
+  margin-top: 4px;
+}
+
 .table-wrap {
   max-width: 100%;
   overflow: auto;

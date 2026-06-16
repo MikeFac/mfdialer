@@ -1,7 +1,9 @@
 import express from 'express';
+import crypto from 'node:crypto';
 import { requireAppContext, clerkIsConfigured } from './auth.js';
 import { prisma } from './db.js';
 import { normalizePhoneNumber } from './phone.js';
+import { EVENT_TYPES, fireEvent, deliverWithRetry, buildCallPayload, buildSuppressionPayload } from './webhooks.js';
 
 export const apiRouter = express.Router();
 
@@ -97,8 +99,22 @@ apiRouter.get('/dashboard', async (req, res) => {
   if (!context) return;
 
   const workspaceId = context.workspace.id;
+  const from = req.query.from ? new Date(req.query.from) : undefined;
+  const to = req.query.to ? new Date(req.query.to) : undefined;
+  if (from) from.setHours(0, 0, 0, 0);
+  if (to) to.setHours(23, 59, 59, 999);
+
+  const dateFilter = {
+    ...(from && { gte: from }),
+    ...(to && { lte: to }),
+  };
+  const callDateWhere = Object.keys(dateFilter).length > 0 ? { startedAt: dateFilter } : {};
+
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+
+  const sevenDaysAgo = new Date(today);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
 
   const [
     campaigns,
@@ -108,6 +124,11 @@ apiRouter.get('/dashboard', async (req, res) => {
     callbacksDue,
     dncCount,
     recentCalls,
+    totalCalls,
+    totalAnswered,
+    avgDuration,
+    outcomeCounts,
+    trendData,
   ] = await Promise.all([
     prisma.campaign.count({ where: { workspaceId, status: { not: 'archived' } } }),
     prisma.contact.count({ where: { workspaceId } }),
@@ -116,16 +137,51 @@ apiRouter.get('/dashboard', async (req, res) => {
     prisma.callbackReminder.count({ where: { workspaceId, status: 'open', dueAt: { lte: new Date() } } }),
     prisma.suppressionEntry.count({ where: { workspaceId, type: 'do_not_call' } }),
     prisma.callAttempt.findMany({
-      where: { workspaceId },
+      where: { workspaceId, ...callDateWhere },
       orderBy: { startedAt: 'desc' },
-      take: 8,
-      include: {
-        contact: true,
-        phoneNumber: true,
-        campaign: true,
-      },
+      take: 10,
+      include: { contact: true, phoneNumber: true, campaign: true },
     }),
+    prisma.callAttempt.count({ where: { workspaceId, ...callDateWhere } }),
+    prisma.callAttempt.count({ where: { workspaceId, ...callDateWhere, answeredAt: { not: null } } }),
+    prisma.callAttempt.aggregate({
+      where: { workspaceId, ...callDateWhere, answeredAt: { not: null }, durationSeconds: { not: null } },
+      _avg: { durationSeconds: true },
+    }),
+    prisma.callAttempt.groupBy({
+      by: ['outcome'],
+      where: { workspaceId, ...callDateWhere, outcome: { not: null } },
+      _count: { outcome: true },
+    }),
+    prisma.$queryRaw`
+      SELECT DATE(startedAt) as date, COUNT(*) as count
+      FROM CallAttempt
+      WHERE workspaceId = ${workspaceId}
+        AND startedAt >= ${sevenDaysAgo}
+      GROUP BY DATE(startedAt)
+      ORDER BY DATE(startedAt) ASC
+    `,
   ]);
+
+  const contactRate = totalCalls > 0
+    ? Math.round((outcomeCounts
+        .filter((o) => ['interested', 'callback_requested', 'needs_follow_up'].includes(o.outcome))
+        .reduce((sum, o) => sum + o._count.outcome, 0) / totalCalls) * 100)
+    : 0;
+
+  const outcomeBreakdown = {};
+  for (const o of outcomeCounts) {
+    outcomeBreakdown[o.outcome] = o._count.outcome;
+  }
+
+  const trend = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const ds = d.toISOString().slice(0, 10);
+    const row = trendData.find((r) => String(r.date).slice(0, 10) === ds);
+    trend.push({ date: ds, count: row ? Number(row.count) : 0 });
+  }
 
   res.json({
     metrics: {
@@ -135,6 +191,13 @@ apiRouter.get('/dashboard', async (req, res) => {
       answeredToday,
       callbacksDue,
       dncCount,
+      totalCalls,
+      totalAnswered,
+      answerRate: totalCalls > 0 ? Math.round((totalAnswered / totalCalls) * 100) : 0,
+      contactRate,
+      avgDuration: Math.round(avgDuration._avg.durationSeconds || 0),
+      outcomeBreakdown,
+      trend,
     },
     recentCalls: recentCalls.map((call) => ({
       id: call.id,
@@ -144,8 +207,50 @@ apiRouter.get('/dashboard', async (req, res) => {
       contactName: call.contact?.businessName || call.contact?.contactName || 'Manual dial',
       number: call.phoneNumber?.normalizedNumber,
       campaignName: call.campaign?.name,
+      durationSeconds: call.durationSeconds,
     })),
   });
+});
+
+apiRouter.get('/reports/summary/export', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const workspaceId = context.workspace.id;
+  const from = req.query.from ? new Date(req.query.from) : undefined;
+  const to = req.query.to ? new Date(req.query.to) : undefined;
+  if (from) from.setHours(0, 0, 0, 0);
+  if (to) to.setHours(23, 59, 59, 999);
+  const dateFilter = { ...(from && { gte: from }), ...(to && { lte: to }) };
+  const callDateWhere = Object.keys(dateFilter).length > 0 ? { startedAt: dateFilter } : {};
+
+  const [totalCalls, totalAnswered, avgDur, outcomes] = await Promise.all([
+    prisma.callAttempt.count({ where: { workspaceId, ...callDateWhere } }),
+    prisma.callAttempt.count({ where: { workspaceId, ...callDateWhere, answeredAt: { not: null } } }),
+    prisma.callAttempt.aggregate({
+      where: { workspaceId, ...callDateWhere, answeredAt: { not: null }, durationSeconds: { not: null } },
+      _avg: { durationSeconds: true },
+    }),
+    prisma.callAttempt.groupBy({
+      by: ['outcome'],
+      where: { workspaceId, ...callDateWhere, outcome: { not: null } },
+      _count: { outcome: true },
+    }),
+  ]);
+
+  const rows = [
+    ['Metric', 'Value'],
+    ['Total Calls', totalCalls],
+    ['Answered Calls', totalAnswered],
+    ['Answer Rate', totalCalls > 0 ? `${Math.round((totalAnswered / totalCalls) * 100)}%` : '0%'],
+    ['Avg Duration (s)', Math.round(avgDur._avg.durationSeconds || 0)],
+    ...outcomes.map((o) => [o.outcome, o._count.outcome]),
+  ];
+
+  const csv = rows.map((r) => r.join(',')).join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="summary-report.csv"');
+  res.send(csv);
 });
 
 apiRouter.get('/campaigns', async (req, res) => {
@@ -177,6 +282,88 @@ apiRouter.get('/campaigns', async (req, res) => {
       calls: campaign._count.callAttempts,
       createdAt: campaign.createdAt,
     })),
+  });
+});
+
+apiRouter.get('/reports/campaign/:id', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const { id } = req.params;
+  const from = req.query.from ? new Date(req.query.from) : undefined;
+  const to = req.query.to ? new Date(req.query.to) : undefined;
+  if (from) from.setHours(0, 0, 0, 0);
+  if (to) to.setHours(23, 59, 59, 999);
+
+  const dateFilter = {
+    ...(from && { gte: from }),
+    ...(to && { lte: to }),
+  };
+  const callDateWhere = Object.keys(dateFilter).length > 0 ? { startedAt: dateFilter } : {};
+
+  const campaign = await prisma.campaign.findFirst({
+    where: { id, workspaceId: context.workspace.id },
+    include: {
+      members: { select: { status: true } },
+    },
+  });
+
+  if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+  const memberStatusCounts = {};
+  for (const m of campaign.members) {
+    memberStatusCounts[m.status] = (memberStatusCounts[m.status] || 0) + 1;
+  }
+
+  const [
+    totalCalls,
+    answeredCalls,
+    avgDuration,
+    outcomeCounts,
+    dncBlocked,
+  ] = await Promise.all([
+    prisma.callAttempt.count({ where: { workspaceId: context.workspace.id, campaignId: id, ...callDateWhere } }),
+    prisma.callAttempt.count({ where: { workspaceId: context.workspace.id, campaignId: id, ...callDateWhere, answeredAt: { not: null } } }),
+    prisma.callAttempt.aggregate({
+      where: { workspaceId: context.workspace.id, campaignId: id, ...callDateWhere, answeredAt: { not: null }, durationSeconds: { not: null } },
+      _avg: { durationSeconds: true },
+    }),
+    prisma.callAttempt.groupBy({
+      by: ['outcome'],
+      where: { workspaceId: context.workspace.id, campaignId: id, ...callDateWhere, outcome: { not: null } },
+      _count: { outcome: true },
+    }),
+    prisma.callAttempt.count({ where: { workspaceId: context.workspace.id, campaignId: id, ...callDateWhere, status: 'blocked' } }),
+  ]);
+
+  const outcomeBreakdown = {};
+  for (const o of outcomeCounts) {
+    outcomeBreakdown[o.outcome] = o._count.outcome;
+  }
+
+  const contactRate = totalCalls > 0
+    ? Math.round((outcomeCounts
+        .filter((o) => ['interested', 'callback_requested', 'needs_follow_up'].includes(o.outcome))
+        .reduce((sum, o) => sum + o._count.outcome, 0) / totalCalls) * 100)
+    : 0;
+
+  res.json({
+    campaign: {
+      id: campaign.id,
+      name: campaign.name,
+      status: campaign.status,
+      totalMembers: campaign.members.length,
+      memberStatusCounts,
+    },
+    stats: {
+      totalCalls,
+      answeredCalls,
+      answerRate: totalCalls > 0 ? Math.round((answeredCalls / totalCalls) * 100) : 0,
+      contactRate,
+      avgDuration: Math.round(avgDuration._avg.durationSeconds || 0),
+      dncBlocked,
+      outcomeBreakdown,
+    },
   });
 });
 
@@ -311,6 +498,52 @@ apiRouter.get('/contacts', async (req, res) => {
   });
 
   res.json({ contacts: contacts.map(serializeContact) });
+});
+
+apiRouter.get('/contacts/export', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const contacts = await prisma.contact.findMany({
+    where: { workspaceId: context.workspace.id },
+    include: {
+      phoneNumbers: {
+        include: { phoneNumber: true },
+        orderBy: { isPrimary: 'desc' },
+      },
+      campaignMembers: { include: { campaign: true } },
+    },
+    orderBy: { businessName: 'asc' },
+  });
+
+  const rows = contacts.map((c) => ({
+    id: c.id,
+    businessName: c.businessName,
+    contactName: c.contactName || '',
+    email: c.email || '',
+    website: c.website || '',
+    phone: c.phoneNumbers.map((p) => p.phoneNumber.normalizedNumber).join('; '),
+    address: c.address || '',
+    city: c.city || '',
+    state: c.state || '',
+    status: c.status,
+    doNotCall: c.doNotCall ? 'yes' : 'no',
+    notes: (c.notes || '').replace(/"/g, '""'),
+    campaigns: c.campaignMembers.map((m) => m.campaign.name).join('; '),
+  }));
+
+  const headers = ['id', 'businessName', 'contactName', 'email', 'website', 'phone', 'address', 'city', 'state', 'status', 'doNotCall', 'notes', 'campaigns'];
+  const csv = [
+    headers.join(','),
+    ...rows.map((r) => headers.map((h) => {
+      const val = String(r[h] ?? '');
+      return val.includes(',') || val.includes('\n') || val.includes('"') ? `"${val}"` : val;
+    }).join(',')),
+  ].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="contacts.csv"');
+  res.send(csv);
 });
 
 apiRouter.post('/contacts', async (req, res) => {
@@ -798,6 +1031,28 @@ apiRouter.post('/call-attempts/:id/outcome', async (req, res) => {
   }
 
   const updated = await prisma.callAttempt.findUnique({ where: { id: callAttempt.id } });
+
+  if (outcome) {
+    fireEvent(context.workspace.id, 'call.completed', await buildCallPayload(callAttempt.id));
+    if (outcome === 'answered') {
+      fireEvent(context.workspace.id, 'call.answered', await buildCallPayload(callAttempt.id));
+    }
+    if (['interested', 'callback_requested', 'not_interested', 'do_not_call'].includes(outcome)) {
+      fireEvent(context.workspace.id, `call.outcome.${outcome}`, await buildCallPayload(callAttempt.id));
+    }
+  }
+
+  if (doNotCall && callAttempt.contactId) {
+    const phone = callAttempt.phoneNumberId
+      ? await prisma.phoneNumber.findUnique({ where: { id: callAttempt.phoneNumberId } })
+      : null;
+    fireEvent(context.workspace.id, 'contact.dnc_added', {
+      suppression: { type: 'do_not_call', scope: 'contact', reason: 'Requested via call outcome', source: 'call_outcome' },
+      contact: { id: callAttempt.contactId },
+      phoneNumber: phone ? { normalizedNumber: phone.normalizedNumber } : null,
+    });
+  }
+
   res.json({ callAttempt: updated });
 });
 
@@ -879,6 +1134,40 @@ apiRouter.get('/suppressions', async (req, res) => {
   res.json({ suppressions });
 });
 
+apiRouter.get('/suppressions/export', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const suppressions = await prisma.suppressionEntry.findMany({
+    where: { workspaceId: context.workspace.id },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      contact: true,
+      phoneNumber: true,
+      addedBy: true,
+    },
+  });
+
+  const headers = ['id', 'normalizedNumber', 'type', 'scope', 'reason', 'source', 'contactName', 'businessName', 'addedBy', 'createdAt'];
+  const csv = [
+    headers.join(','),
+    ...suppressions.map((s) => headers.map((h) => {
+      let val;
+      switch (h) {
+        case 'contactName': val = s.contact?.contactName || ''; break;
+        case 'businessName': val = s.contact?.businessName || ''; break;
+        case 'addedBy': val = s.addedBy?.email || ''; break;
+        default: val = String(s[h] ?? '');
+      }
+      return val.includes(',') || val.includes('\n') || val.includes('"') ? `"${val.replace(/"/g, '""')}"` : val;
+    }).join(',')),
+  ].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="dnc-suppressions.csv"');
+  res.send(csv);
+});
+
 apiRouter.post('/suppressions', async (req, res) => {
   const context = await requireAppContext(req, res);
   if (!context) return;
@@ -917,6 +1206,8 @@ apiRouter.post('/suppressions', async (req, res) => {
     });
   }
 
+  fireEvent(context.workspace.id, 'contact.dnc_added', await buildSuppressionPayload(suppression.id));
+
   res.status(201).json({ suppression });
 });
 
@@ -937,6 +1228,43 @@ apiRouter.get('/call-attempts', async (req, res) => {
   });
 
   res.json({ callAttempts: calls });
+});
+
+apiRouter.get('/call-attempts/export', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const calls = await prisma.callAttempt.findMany({
+    where: { workspaceId: context.workspace.id },
+    orderBy: { startedAt: 'desc' },
+    include: {
+      campaign: true,
+      contact: true,
+      phoneNumber: true,
+      agent: true,
+    },
+  });
+
+  const headers = ['id', 'startedAt', 'contactName', 'businessName', 'phoneNumber', 'status', 'outcome', 'durationSeconds', 'campaign', 'agent', 'failureReason'];
+  const csv = [
+    headers.join(','),
+    ...calls.map((c) => headers.map((h) => {
+      let val;
+      switch (h) {
+        case 'contactName': val = c.contact?.contactName || ''; break;
+        case 'businessName': val = c.contact?.businessName || ''; break;
+        case 'phoneNumber': val = c.phoneNumber?.normalizedNumber || ''; break;
+        case 'campaign': val = c.campaign?.name || ''; break;
+        case 'agent': val = c.agent?.email || ''; break;
+        default: val = String(c[h] ?? '');
+      }
+      return val.includes(',') || val.includes('\n') || val.includes('"') ? `"${val.replace(/"/g, '""')}"` : val;
+    }).join(',')),
+  ].join('\n');
+
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="call-history.csv"');
+  res.send(csv);
 });
 
 apiRouter.post('/call-attempts', async (req, res) => {
@@ -1288,4 +1616,262 @@ apiRouter.patch('/call-attempts/:id', async (req, res) => {
   });
 
   res.json({ callAttempt });
+});
+
+// ─── Webhook Endpoints ───────────────────────────────────────────────────
+
+// (webhooks module imported at top of file)
+
+apiRouter.get('/webhooks', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const endpoints = await prisma.webhookEndpoint.findMany({
+    where: { workspaceId: context.workspace.id },
+    include: { subscriptions: true },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  res.json({
+    endpoints: endpoints.map((ep) => ({
+      id: ep.id,
+      name: ep.name,
+      url: ep.url,
+      secretHint: ep.secret ? ep.secret.slice(-4).padStart(ep.secret.length, '*') : null,
+      active: ep.active,
+      subscriptions: ep.subscriptions.map((s) => s.eventType),
+      createdAt: ep.createdAt,
+    })),
+  });
+});
+
+apiRouter.post('/webhooks', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const { name, url, secret, active = true, subscriptions = [] } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ error: 'Name is required.' });
+  if (!url?.trim()) return res.status(400).json({ error: 'URL is required.' });
+
+  try {
+    new URL(url.trim());
+  } catch {
+    return res.status(400).json({ error: 'Invalid URL.' });
+  }
+
+  const endpoint = await prisma.webhookEndpoint.create({
+    data: {
+      workspaceId: context.workspace.id,
+      name: name.trim(),
+      url: url.trim(),
+      secret: secret || null,
+      active,
+      subscriptions: {
+        create: subscriptions
+          .filter((t) => EVENT_TYPES.includes(t))
+          .map((t) => ({ eventType: t })),
+      },
+    },
+    include: { subscriptions: true },
+  });
+
+  res.status(201).json({
+    endpoint: {
+      id: endpoint.id,
+      name: endpoint.name,
+      url: endpoint.url,
+      active: endpoint.active,
+      subscriptions: endpoint.subscriptions.map((s) => s.eventType),
+    },
+  });
+});
+
+apiRouter.patch('/webhooks/:id', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const { name, url, secret, active } = req.body || {};
+  const existing = await prisma.webhookEndpoint.findFirst({
+    where: { id: req.params.id, workspaceId: context.workspace.id },
+  });
+  if (!existing) return res.status(404).json({ error: 'Endpoint not found.' });
+
+  const data = {};
+  if (name !== undefined) data.name = name.trim();
+  if (url !== undefined) {
+    try { new URL(url.trim()); } catch { return res.status(400).json({ error: 'Invalid URL.' }); }
+    data.url = url.trim();
+  }
+  if (secret !== undefined) data.secret = secret || null;
+  if (active !== undefined) data.active = active;
+
+  const endpoint = await prisma.webhookEndpoint.update({
+    where: { id: req.params.id },
+    data,
+    include: { subscriptions: true },
+  });
+
+  res.json({
+    endpoint: {
+      id: endpoint.id,
+      name: endpoint.name,
+      url: endpoint.url,
+      active: endpoint.active,
+      subscriptions: endpoint.subscriptions.map((s) => s.eventType),
+    },
+  });
+});
+
+apiRouter.delete('/webhooks/:id', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const existing = await prisma.webhookEndpoint.findFirst({
+    where: { id: req.params.id, workspaceId: context.workspace.id },
+  });
+  if (!existing) return res.status(404).json({ error: 'Endpoint not found.' });
+
+  await prisma.webhookEndpoint.delete({ where: { id: req.params.id } });
+  res.json({ success: true });
+});
+
+apiRouter.post('/webhooks/:id/subscriptions', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const { subscriptions = [] } = req.body || {};
+  const existing = await prisma.webhookEndpoint.findFirst({
+    where: { id: req.params.id, workspaceId: context.workspace.id },
+  });
+  if (!existing) return res.status(404).json({ error: 'Endpoint not found.' });
+
+  await prisma.webhookSubscription.deleteMany({ where: { endpointId: req.params.id } });
+  await prisma.webhookSubscription.createMany({
+    data: subscriptions
+      .filter((t) => EVENT_TYPES.includes(t))
+      .map((t) => ({ endpointId: req.params.id, eventType: t })),
+  });
+
+  const endpoint = await prisma.webhookEndpoint.findUnique({
+    where: { id: req.params.id },
+    include: { subscriptions: true },
+  });
+  res.json({ subscriptions: endpoint.subscriptions.map((s) => s.eventType) });
+});
+
+apiRouter.get('/webhooks/events', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const events = await prisma.webhookEvent.findMany({
+    where: { workspaceId: context.workspace.id },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+    include: { endpoint: { select: { name: true, url: true } } },
+  });
+
+  res.json({
+    events: events.map((e) => ({
+      id: e.id,
+      eventType: e.eventType,
+      status: e.status,
+      attempts: e.attempts,
+      responseStatus: e.responseStatus,
+      lastAttemptAt: e.lastAttemptAt,
+      createdAt: e.createdAt,
+      endpoint: { name: e.endpoint.name, url: e.endpoint.url },
+    })),
+  });
+});
+
+apiRouter.get('/webhooks/events/:id', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const event = await prisma.webhookEvent.findFirst({
+    where: { id: req.params.id, workspaceId: context.workspace.id },
+    include: { endpoint: { select: { name: true, url: true } } },
+  });
+  if (!event) return res.status(404).json({ error: 'Event not found.' });
+
+  res.json({ event: { ...event, endpoint: { name: event.endpoint.name, url: event.endpoint.url } } });
+});
+
+apiRouter.post('/webhooks/events/:id/retry', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const event = await prisma.webhookEvent.findFirst({
+    where: { id: req.params.id, workspaceId: context.workspace.id },
+  });
+  if (!event) return res.status(404).json({ error: 'Event not found.' });
+
+  const endpoint = await prisma.webhookEndpoint.findUnique({ where: { id: event.endpointId } });
+  if (!endpoint) return res.status(404).json({ error: 'Endpoint not found.' });
+
+  await prisma.webhookEvent.update({
+    where: { id: event.id },
+    data: { status: 'pending', attempts: 0 },
+  });
+
+  deliverWithRetry(event.id, endpoint);
+
+  res.json({ success: true });
+});
+
+apiRouter.post('/webhooks/:id/test', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const endpoint = await prisma.webhookEndpoint.findFirst({
+    where: { id: req.params.id, workspaceId: context.workspace.id },
+  });
+  if (!endpoint) return res.status(404).json({ error: 'Endpoint not found.' });
+
+  const testPayload = {
+    event: 'call.completed',
+    deliveryId: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    workspaceId: context.workspace.id,
+    data: {
+      callAttempt: { id: 'test', direction: 'outbound', status: 'completed', outcome: 'interested', durationSeconds: 60 },
+      contact: { id: 'test', businessName: 'Test Business', contactName: 'Test Contact' },
+      campaign: null,
+      notes: [],
+      callback: null,
+    },
+  };
+
+  const event = await prisma.webhookEvent.create({
+    data: {
+      workspaceId: context.workspace.id,
+      endpointId: endpoint.id,
+      eventType: 'call.completed',
+      payload: JSON.stringify(testPayload),
+      status: 'pending',
+    },
+  });
+
+  deliverWithRetry(event.id, endpoint);
+
+  res.json({ success: true, message: 'Test event queued for delivery.' });
+});
+
+apiRouter.post('/webhooks/:id/trigger', async (req, res) => {
+  const context = await requireAppContext(req, res);
+  if (!context) return;
+
+  const { callAttemptId, eventType = 'call.completed' } = req.body || {};
+  if (!callAttemptId) return res.status(400).json({ error: 'callAttemptId is required.' });
+
+  const endpoint = await prisma.webhookEndpoint.findFirst({
+    where: { id: req.params.id, workspaceId: context.workspace.id },
+  });
+  if (!endpoint) return res.status(404).json({ error: 'Endpoint not found.' });
+
+  const data = await buildCallPayload(callAttemptId);
+  if (!data) return res.status(404).json({ error: 'Call attempt not found.' });
+
+  await fireEvent(context.workspace.id, eventType, data);
+  res.json({ success: true });
 });
